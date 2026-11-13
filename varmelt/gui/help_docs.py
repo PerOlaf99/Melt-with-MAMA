@@ -19,6 +19,18 @@ for <b>CTCE</b> (cycling temperature capillary electrophoresis) and related
 melt-shape methods. It is a design and comparison workbench, not a commercial
 HRM analysis package.
 </p>
+<p>Two assay types can be designed (<b>Design</b> menu):</p>
+<ul>
+<li><b>Fragment design (CTCE)</b> &mdash; two primers around the variant and a
+    GC clamp; wildtype and mutant fragments are separated by their melting
+    behaviour in cycling temperature capillary electrophoresis.  Finds
+    <i>any</i> variant in the fragment.</li>
+<li><b>MAMA assay design</b> &mdash; three primers (wildtype, mutant and a
+    common primer) for <i>one known</i> variant; each allele-specific primer
+    only extends on its own allele (section&nbsp;3).</li>
+</ul>
+<p>New to MAMA?  Start with <b>Examples &rarr; MAMA: BRAF V600E, with
+explanation</b>.</p>
 
 <h3>1. Typical workflow</h3>
 <ol>
@@ -43,7 +55,7 @@ HRM analysis package.
     design or alignment tools.</li>
 </ol>
 
-<h3>2. Design dialog</h3>
+<h3>2. Fragment design (CTCE)</h3>
 <ul>
 <li>Enter one variant per line: <code>rs113488022</code> or
     <code>chr7:140453136 A>T</code>.</li>
@@ -60,7 +72,56 @@ HRM analysis package.
     sits in that range.</li>
 </ul>
 
-<h3>3. Tiling-walk of a long template</h3>
+<h3>3. MAMA assay design</h3>
+<p>
+<b>Design &rarr; MAMA assay design…</b> (Ctrl+M) designs, for each variant,
+a <b>WT primer</b> and a <b>MUT primer</b> that end on the variant, plus one
+<b>common primer</b> on the other side.  Two PCR reactions are run per
+sample: WT&nbsp;+&nbsp;common and MUT&nbsp;+&nbsp;common.
+</p>
+<ul>
+<li><b>Point mutations</b> follow Cha, Zarbl, Keohavong &amp; Thilly (1992):
+    each allele-specific primer has its allele's base at the 3&prime; end and
+    one deliberate mismatch at the penultimate (&minus;2) base.  On its own
+    allele the primer has one mismatch and is extended; on the other allele
+    it has two consecutive 3&prime; mismatches and is blocked.  Both primers
+    share the &minus;2 mismatch and differ only at the last base; no third
+    mismatch is added.</li>
+<li><b>Deletions</b> (and insertions): the WT and MUT primers share their
+    5&prime; start.  The WT primer's 3&prime; end lies 3&ndash;5&nbsp;bp
+    <i>inside</i> the deleted stretch, so it cannot prime on the mutant; the
+    MUT primer spans the deletion junction and ends 3&ndash;5&nbsp;bp
+    <i>beyond</i> it, so it only primes where the two flanks are joined.
+    Their 3&prime; ends differ at three or more bases, and the WT and MUT
+    products differ in length.  Variants written VCF-style
+    (<code>ACATTG&gt;A</code>) are counted from the base after the shared
+    anchor base.</li>
+<li><b>Labelling tail</b> (ON/OFF button): when ON, the common primer gets a
+    5&prime; tail.  Add a fluorescent primer with the tail's sequence to the
+    PCR: once the tail has been copied into the product it primes there and
+    labels the product, so one labelled oligo serves every assay.  OFF gives
+    a plain common primer.</li>
+<li><b>In-silico PCR</b> runs on the reference (wildtype) genome and is
+    compared with what the assay should give: deletion/insertion
+    WT&nbsp;1&nbsp;/&nbsp;MUT&nbsp;0 products, point mutation
+    WT&nbsp;0&nbsp;/&nbsp;MUT&nbsp;0.  The allele-specific primers must match
+    at their last two 3&prime; bases, so the deliberate &minus;2 mismatch
+    counts as blocking.  Any other result is marked &#9888; and costs
+    40&nbsp;score points; hover over the <i>In-silico PCR</i> cell for
+    details.</li>
+<li>The table lists one row per primer set ([WT] and [MUT]) with product
+    length, variant type, in-silico result, Tm of the allele-specific and
+    common primer, orientation and tail.  <b>Add selected</b> puts the assay
+    in the project; the primer table then shows both sets.</li>
+<li>MAMA specificity depends strongly on PCR conditions.  In the original
+    paper a two-step cycle and added glycerol improved discrimination, and the
+    authors noted that optimal conditions may differ between sequences:
+    titrate the annealing temperature with wildtype-only and mutant controls,
+    and use the wildtype-only signal in the MUT reaction as the assay
+    background.</li>
+</ul>
+
+<h3>4. Tiling-walk of a long template</h3>
 <p>
 <b>Design → Fragment tiling…</b> (Ctrl+T) covers a long DNA template with
 overlapping amplicons — paste the sequence or fetch a GenBank accession
@@ -93,27 +154,91 @@ windows are cut shorter, monotonic with temperature.
     is shown folded back onto the circle.</li>
 </ul>
 
-<h3>4. Reading the melt chart</h3>
+<h3>5. Reading the melt chart</h3>
 <ul>
 <li><b>Solid line</b> — reference (wildtype) local Tm along the fragment.</li>
 <li><b>Dashed red</b> — variant allele on the same physical layout.</li>
 <li><b>Grey region</b> — optional GC clamp oligo (not part of the genomic amplicon).</li>
+<li><b>Deletions and insertions</b>: wildtype and mutant are drawn as the
+    continuous fragments the PCR produces, each from its own base&nbsp;1.  With
+    a 3&prime; clamp the shorter fragment is moved right as a whole, so the two
+    GC clamps lie on top of each other; with a 5&prime; clamp both clamps start
+    at base&nbsp;1.</li>
+<li><b>Legend</b> (selector beside the zoom buttons): <i>Inside</i> (top
+    right of the plot), <i>Outside</i> (in a margin right of the plot, so no
+    curve is covered) or <i>Hidden</i>.  Each legend line starts with the
+    amplicon's number in the list, followed by a short label (variant, fragment
+    length, clamp side); long alleles are shortened to <code>del23</code>,
+    <code>ins8</code>.  The choice is remembered.</li>
 <li>Zoom: mouse wheel or + / − ; pan: Shift or middle-drag; drag a box to zoom;
     double-click or Reset to show all.</li>
 </ul>
 
-<h3>5. Score (0–100)</h3>
+<h3>6. Score (0–100)</h3>
 <p>
 Dip-free shape, resolvable WT/mut difference, primer Tm near optimum,
 short fragment, and dbSNP-free 3′ ends. Higher is better for CTCE-oriented design;
 always inspect the overlay before ordering oligos.
 </p>
+<p>
+MAMA score: melting difference, a bonus for deletions, &ge;3 differing
+3&prime; bases (deletions) or the &minus;2 mismatch (point mutations), primer
+Tm in range and a short product; &minus;40 when the in-silico PCR does not
+give the expected products.
+</p>
 
-<h3>6. Files</h3>
+<h3>7. Examples</h3>
+<ul>
+<li><b>BRAF 127 bp flat vs sloped</b> &mdash; the same amplicon with the GC
+    clamp on either end: a flat melting plateau versus a clean slope.</li>
+<li><b>BRAF V600E wt/mut pair</b> and <b>BRAF silent T-&gt;A</b> &mdash; the
+    same T&gt;A change shifts the melting map at codon 600 but is invisible
+    at base 28: whether a mutation can be seen depends on where it lies in the
+    fragment.</li>
+<li><b>MAMA: BRAF V600E, with explanation</b> &mdash; designs the MAMA assay
+    for V600E on the same amplicon, adds it to the project and explains the
+    primers, the 3&prime;-end mismatches on wildtype and mutant DNA, how to
+    read the two reactions and the in-silico check.</li>
+</ul>
+
+<h3>8. Files</h3>
 <ul>
 <li>Projects: <code>*.varmelt.json</code></li>
 <li>Primer table: CSV export from the main window</li>
 <li>Chart: File → Export chart image</li>
+</ul>
+
+<h3>9. Background and references</h3>
+<p>
+CTCE was developed by Per Olaf Ekstr&oslash;m and colleagues at the Norwegian
+Radium Hospital (Oslo University Hospital) with William G. Thilly (MIT).
+The capillary temperature is cycled during electrophoresis, so wildtype and
+mutant fragments are separated by their different melting without first
+optimising a separation temperature for each sequence.  The fragment needs a
+single low-melting domain next to a high-melting GC clamp &mdash; which is what
+the melt maps in MeltScope are for.
+</p>
+<ul>
+<li>Ekstr&oslash;m PO, Bj&oslash;rheim J, Thilly WG. Technology to accelerate
+    pangenomic scanning for unknown point mutations in exonic sequences:
+    cycling temperature capillary electrophoresis (CTCE). <i>BMC Genet</i>
+    2007;8:54. doi:10.1186/1471-2156-8-54</li>
+<li>Ekstr&oslash;m PO, Warren DJ, Thilly WG. Separation principles of cycling
+    temperature capillary electrophoresis. <i>Electrophoresis</i> 2012.
+    doi:10.1002/elps.201100550</li>
+<li>Ekstr&oslash;m PO, Khrapko K, Li-Sucholeiki XC, Hunter IW, Thilly WG.
+    Analysis of mutational spectra by denaturing capillary electrophoresis.
+    <i>Nat Protoc</i> 2008;3:1153&ndash;1166. doi:10.1038/nprot.2008.79</li>
+<li>Hinselwood DC, Abrahamsen TW, Ekstr&oslash;m PO. BRAF mutation detection
+    and identification by cycling temperature capillary electrophoresis.
+    <i>Electrophoresis</i> 2005;26:2553&ndash;2561.</li>
+<li>Ekstr&oslash;m PO, Nakken S, Johansen M, Hovig E. Automated amplicon
+    design suitable for analysis of DNA variants by melting techniques.
+    <i>BMC Res Notes</i> 2015;8:667. doi:10.1186/s13104-015-1624-8 &mdash;
+    the Variant Melting Profile tool that MeltScope re-implements.</li>
+<li>Cha RS, Zarbl H, Keohavong P, Thilly WG. Mismatch amplification mutation
+    assay (MAMA): application to the c-H-ras gene. <i>PCR Methods Appl</i>
+    1992;2:14&ndash;20. doi:10.1101/gr.2.1.14 (PMID 1490171)</li>
 </ul>
 
 <p style="color:#555;">

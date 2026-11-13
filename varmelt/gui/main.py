@@ -407,6 +407,13 @@ class MainWindow(QMainWindow):
                          self._load_example_braf_v600e)
         self._add_action(m_exp, "BRAF silent T->A (dTm ~ 0)",
                          self._load_example_braf_silent)
+        m_exp.addSeparator()
+        self._add_action(m_exp, "MAMA: BRAF V600E, with explanation…",
+                         self._load_example_mama_braf,
+                         tip="Design a MAMA assay for BRAF V600E on the "
+                             "example amplicon, add it to the project and "
+                             "explain how the primers discriminate the "
+                             "alleles")
 
         m_set = self.menuBar().addMenu("S&ettings")
         self._add_action(m_set, "Primer design settings…",
@@ -494,6 +501,54 @@ class MainWindow(QMainWindow):
             "BRAF silent T->A at base 28: dTm ~ 0.0000 C, delta-area 0.1 "
             "C*bp -- the same T->A as V600E, but here the curve does not "
             "move at all", 6000)
+
+    def _load_example_mama_braf(self):
+        """Add the BRAF V600E MAMA assay and open its explanation."""
+        from .examples import braf_v600e_mama, mama_explanation_html
+        try:
+            cand = braf_v600e_mama()
+        except ValueError as exc:
+            QMessageBox.warning(self, "MeltScope", str(exc))
+            return
+        items, err = self._make_designed_item(cand)
+        if items is None:
+            QMessageBox.warning(self, "MeltScope", err)
+            return
+        for it in items:
+            self.project.add(it)
+        self._refresh_list()
+        self._render_plots()
+        self._render_table()
+        self._select_index(len(self.project.items) - 1)
+        self.statusBar().showMessage(
+            "BRAF V600E MAMA: WT and MUT primer sets are in the primer "
+            "table; see the explanation window", 8000)
+        self._show_html_window("Example: MAMA for BRAF V600E",
+                               mama_explanation_html(cand),
+                               attr="_mama_example_dlg")
+
+    def _show_html_window(self, title, html_text, attr):
+        """A non-modal reading window (one per *attr*), so the chart and
+        primer table stay usable while it is open."""
+        from PySide6.QtWidgets import (QDialog, QDialogButtonBox,
+                                       QTextBrowser, QVBoxLayout)
+        dlg = getattr(self, attr, None)
+        if dlg is None:
+            dlg = QDialog(self)
+            dlg.resize(760, 640)
+            lay = QVBoxLayout(dlg)
+            dlg.browser = QTextBrowser()
+            dlg.browser.setOpenExternalLinks(True)
+            lay.addWidget(dlg.browser)
+            box = QDialogButtonBox(QDialogButtonBox.Close)
+            box.rejected.connect(dlg.close)
+            lay.addWidget(box)
+            setattr(self, attr, dlg)
+        dlg.setWindowTitle(title)
+        dlg.browser.setHtml(html_text)
+        dlg.show()
+        dlg.raise_()
+        return dlg
 
     def _open_design(self):
         """Open the fragment-design dialog (one instance, stays open)."""

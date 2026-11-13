@@ -1416,6 +1416,53 @@ def test_legend_short_labels_and_modes():
         settings().setValue("legend_mode", saved)
 
 
+def test_mama_braf_example_and_manual():
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui import examples as ex
+    from varmelt.gui import help_docs
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    cand = ex.braf_v600e_mama()
+    a = cand.mama
+    mut = (ex.BRAF_FLAT_VS_SLOPED[:ex.BRAF_V600E_IDX] + "A"
+           + ex.BRAF_FLAT_VS_SLOPED[ex.BRAF_V600E_IDX + 1:])
+    on = lambda p, d: ex.primer_on_template(p, d, ex.BRAF_V600E_IDX,
+                                            a.orientation)[2]
+    ok(on(a.info.wt_as, ex.BRAF_FLAT_VS_SLOPED) == 1
+       and on(a.info.mut_as, mut) == 1,
+       "each primer: one (-2) mismatch on its own allele")
+    ok(on(a.info.wt_as, mut) == 2 and on(a.info.mut_as,
+                                         ex.BRAF_FLAT_VS_SLOPED) == 2,
+       "each primer: two 3' mismatches on the other allele")
+    ok(a.info.inpcr_ok is True, "in-silico PCR as expected (WT 0 / MUT 0)")
+
+    win = MainWindow()
+    n0 = len(win.project.items)
+    win._load_example_mama_braf()
+    app.processEvents()
+    ok(len(win.project.items) == n0 + 1
+       and win.project.items[-1].result.get("mama"),
+       "the MAMA example adds an assay to the project")
+    dlg = win._mama_example_dlg
+    text = dlg.browser.toPlainText()
+    ok(dlg.isVisible() and "BRAF V600E" in text, "explanation window opens")
+    ok(a.info.wt_as in text and a.info.mut_as in text,
+       "explanation lists the designed primers")
+    ok("blocked" in text and "extends" in text,
+       "explanation shows which primer/DNA pairs extend or are blocked")
+    ok(any(act.text().startswith("MAMA: BRAF V600E")
+           for m in win.menuBar().actions() if m.menu()
+           for act in m.menu().actions()), "Examples menu entry")
+    dlg.close(); win.close()
+
+    for needle in ("MAMA assay design", "deliberate mismatch",
+                   "Labelling tail", "Background and references",
+                   "Ekstr&oslash;m PO, Bj&oslash;rheim J, Thilly WG",
+                   "10.1186/s13104-015-1624-8", "PMID 1490171"):
+        ok(needle in help_docs.MANUAL_HTML, f"manual mentions: {needle}")
+
+
 if __name__ == "__main__":
     test_model_compute_roundtrip()
     test_project_schema()
@@ -1446,6 +1493,7 @@ if __name__ == "__main__":
     test_candidate_file_opens_only_in_matching_window()
     test_designed_insertion_3prime_clamp_overlays()
     test_legend_short_labels_and_modes()
+    test_mama_braf_example_and_manual()
     print("\n" + ("ALL GUI TESTS PASSED" if failures == 0
                   else f"{failures} FAILURE(S)"))
     sys.exit(1 if failures else 0)
