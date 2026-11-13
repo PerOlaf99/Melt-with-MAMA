@@ -105,7 +105,10 @@ class Item:
         side = self.clamp_side()
         clamp_len = len(GC_CLAMP) if side in ("5'", "3'") else 0
         frag_ref = ref_seq[ps:pe + 1] if ps <= pe else ""
-        frag_alt = alt_seq[ps:pe + 1] if ps <= pe else ""
+        # The item holds the whole wt and mutant amplicons; never trim the
+        # mutant to the wildtype length (that cut the end, incl. the
+        # reverse-primer site, off an insertion mutant).
+        frag_alt = alt_seq if ps <= pe else ""
         if side == "5'":
             frag_ref_c, frag_alt_c = GC_CLAMP + frag_ref, GC_CLAMP + frag_alt
         elif side == "3'":

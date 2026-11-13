@@ -1320,6 +1320,40 @@ def test_candidate_file_opens_only_in_matching_window():
     mama.close(); frag.close(); win.close()
 
 
+def test_designed_insertion_3prime_clamp_overlays():
+    """An insertion mutant is longer than the wildtype; it must not be
+    trimmed to the wildtype length, or its end (and clamp) shifts."""
+    import random
+    from PySide6.QtWidgets import QApplication
+    from varmelt import design
+    from varmelt.gui.main import MainWindow
+    from varmelt.primers import GC_CLAMP
+
+    app = QApplication.instance() or QApplication([])
+    rng = random.Random(7)
+    bg = lambda n: "".join(rng.choice("ACGT") for _ in range(n))
+    seq = bg(300) + "A" + bg(300)
+    res = design.design_variant(chrom="ref", pos=300, ref="A", alt="ACTTG",
+                                refseq_override=seq, genome="hg38")
+    win = MainWindow()
+    cl = len(GC_CLAMP)
+    for side in ("3'", "5'"):
+        c = next((c for c in res.candidates if c.clamp == side), None)
+        if c is None:
+            continue
+        it = win._make_designed_item(c)[0][0]
+        fd = it.fragment_profiles(0.013)
+        r, a = fd["ref_prof"], fd["alt_prof"]
+        ok(len(a) == len(c.mut_amp) + cl,
+           f"{side}: mutant fragment is the whole mutant amplicon + clamp")
+        sh = fd["indel"] if side == "3'" else 0
+        n = len(r)
+        xs = range(0, cl) if side == "5'" else range(n - cl, n)
+        ok(max(abs(r[x] - a[x - sh]) for x in xs) < 0.5,
+           f"{side}: wt and mutant GC clamps overlay")
+    win.close()
+
+
 if __name__ == "__main__":
     test_model_compute_roundtrip()
     test_project_schema()
@@ -1348,6 +1382,7 @@ if __name__ == "__main__":
     test_fragment_and_mama_are_separate_windows()
     test_mama_window_runs_engine_and_shows_inpcr()
     test_candidate_file_opens_only_in_matching_window()
+    test_designed_insertion_3prime_clamp_overlays()
     print("\n" + ("ALL GUI TESTS PASSED" if failures == 0
                   else f"{failures} FAILURE(S)"))
     sys.exit(1 if failures else 0)

@@ -166,6 +166,30 @@ def _fragment_variant(frag_len, clamp_side, clamp_len, var_idx, ps, pe):
     return base, True
 
 
+def alt_fragment(ref_seq, alt_seq, ps, pe, var_idx):
+    """The mutant amplicon for wildtype amplicon ``ref_seq[ps:pe+1]``.
+
+    *alt_seq* is the mutant version of the whole window, so after a
+    deletion/insertion its coordinates differ from *ref_seq* by the length
+    difference ``d``.  Cutting it with the wildtype coordinates (as was done
+    before) runs ``d`` bases past the reverse primer for a deletion and stops
+    ``d`` bases short of it for an insertion -- which put the GC clamp after
+    the wrong bases and showed phantom wt/mut differences inside a 3' clamp.
+    The mutant amplicon starts at the forward primer and ends at the reverse
+    primer, exactly like the wildtype one.
+    """
+    if ps > pe:
+        return ""
+    d = len(ref_seq) - len(alt_seq)
+    if not d or var_idx is None:
+        return alt_seq[ps:pe + 1]
+    if var_idx < ps:                      # variant upstream: both ends move
+        return alt_seq[ps - d:pe + 1 - d]
+    if var_idx > pe:                      # variant downstream: unaffected
+        return alt_seq[ps:pe + 1]
+    return alt_seq[ps:pe + 1 - d]         # variant inside: end moves
+
+
 def render_fragment_svg(fp_seq, rp_seq, ref_seq, alt_seq, ps, pe,
                         clamp_side, var_idx, na=0.013, width=860,
                         height=240):
@@ -180,7 +204,7 @@ def render_fragment_svg(fp_seq, rp_seq, ref_seq, alt_seq, ps, pe,
     if ps > pe:
         return "<svg/>"
     frag_ref = ref_seq[ps:pe + 1]
-    frag_alt = alt_seq[ps:pe + 1]
+    frag_alt = alt_fragment(ref_seq, alt_seq, ps, pe, var_idx)
     clamp_len = len(GC_CLAMP)
     if clamp_side == "5'":
         frag_ref_c, frag_alt_c = GC_CLAMP + frag_ref, GC_CLAMP + frag_alt
@@ -212,7 +236,7 @@ def fragment_separation(fp_seq, rp_seq, ref_seq, alt_seq, ps, pe,
     if ps > pe or var_idx is None or not (ps <= var_idx <= pe):
         return None
     frag_ref = ref_seq[ps:pe + 1]
-    frag_alt = alt_seq[ps:pe + 1]
+    frag_alt = alt_fragment(ref_seq, alt_seq, ps, pe, var_idx)
     clamp_len = len(GC_CLAMP)
     if clamp_side == "5'":
         frag_ref_c = GC_CLAMP + frag_ref
