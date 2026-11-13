@@ -1,7 +1,6 @@
 import math
 import sys
 from contextlib import contextmanager
-sys.path.insert(0, '/home/per/variant-melting-profiles')
 
 from varmelt import inpcr
 
@@ -103,6 +102,61 @@ def test_seed_coverage():
     with _fake_globals({"chr1": chrom}):
         sites = inpcr._unique_sites(chrom.lower(), fp, 2)
     assert sites == hits, sites
+
+
+def _place(seq, pos, text):
+    seq[pos:pos + len(text)] = text
+
+
+def _with_mismatch(text, i):
+    alt = {"A": "C", "C": "G", "G": "T", "T": "A"}
+    return text[:i] + alt[text[i]] + text[i + 1:]
+
+
+FP, RP = "ACGTTGCATGCA", "TTGGCCAACCGG"
+
+
+def _run(fp_site, rc_site, seed=9):
+    seq = list(_random_background(400, seed=seed))
+    _place(seq, 50, fp_site)
+    _place(seq, 120, rc_site)
+    with _fake_globals({"chr1": "".join(seq)}):
+        return inpcr.amplicons("hg38", "chr1", FP, RP, 40, 100)
+
+
+def test_forward_mismatch_in_any_seed_is_found():
+    # Regression: seed hits used to be treated as primer starts, so only the
+    # first seed could ever find a site.  A tolerated mismatch at any
+    # non-3' position must still give the product.
+    rc = inpcr.reverse_complement(RP)
+    for i in range(len(FP) - 1):
+        assert _run(_with_mismatch(FP, i), rc) == [(50, 132)], i
+
+
+def test_reverse_primer_3prime_mismatch_rejected():
+    # Regression: the reverse primer's 3' end is the LEFT base of its
+    # reverse complement on the plus strand; a mismatch there must block it.
+    rc = inpcr.reverse_complement(RP)
+    assert _run(FP, _with_mismatch(rc, 0)) == []
+
+
+def test_reverse_primer_mismatch_in_any_seed_is_found():
+    # ...while a mismatch anywhere else (incl. the primer's 5' end, the
+    # right base of the rc) is tolerated.
+    rc = inpcr.reverse_complement(RP)
+    for i in range(1, len(rc)):
+        assert _run(FP, _with_mismatch(rc, i)) == [(50, 132)], i
+
+
+def test_forward_primer_3prime_mismatch_rejected():
+    rc = inpcr.reverse_complement(RP)
+    assert _run(_with_mismatch(FP, len(FP) - 1), rc) == []
+
+
+def test_three_mismatches_rejected():
+    rc = inpcr.reverse_complement(RP)
+    fp3 = _with_mismatch(_with_mismatch(_with_mismatch(FP, 0), 4), 8)
+    assert _run(fp3, rc) == []
 
 
 if __name__ == "__main__":

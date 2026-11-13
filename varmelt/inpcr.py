@@ -50,21 +50,26 @@ def reverse_complement(seq: str) -> str:
     return seq.translate(comp)[::-1]
 
 
-def _seeds(primer: str, mismatches: int) -> List[str]:
+def _seeds(primer: str, mismatches: int) -> List[Tuple[int, str]]:
     """Split *primer* into ``mismatches+1`` (roughly equal) seeds.
+
+    Returns ``(offset, seed)`` pairs, *offset* being the seed's start within
+    the primer, so a seed hit at genome position ``p`` puts the primer start
+    at ``p - offset``.
 
     Guarantee: any site matching the full primer with <= *mismatches*
     mismatches carries at least one seed that is an exact substring.
     """
     if mismatches <= 0:
-        return [primer]
+        return [(0, primer)]
     n = len(primer)
     k = mismatches + 1
     base, rem = divmod(n, k)
     out, pos = [], 0
     for i in range(k):
         size = base + (1 if i < rem else 0)
-        out.append(primer[pos:pos + size])
+        if size:
+            out.append((pos, primer[pos:pos + size]))
         pos += size
     return out
 
@@ -80,17 +85,24 @@ def _index_of(chrom_seq: str, seed: str) -> List[int]:
         pos += 1
 
 
-def _match_at(chrom_seq: str, pos: int, primer: str,
-              mismatches: int) -> bool:
-    """Whether *primer* anneals at *pos* with <= *mismatches* (3' base exact)."""
-    end = pos + len(primer)
-    if end > len(chrom_seq):
+def _match_at(chrom_seq: str, pos: int, query: str, mismatches: int,
+              three_prime_left: bool = False) -> bool:
+    """Whether *query* anneals at *pos* with <= *mismatches*, 3' base exact.
+
+    *query* is the plus-strand text being matched.  For a forward primer it is
+    the primer itself and its 3' end is the rightmost base.  For a reverse
+    primer it is the primer's reverse complement, so the primer's 3' end is
+    the *leftmost* base of *query* -- pass ``three_prime_left=True``.
+    """
+    end = pos + len(query)
+    if pos < 0 or end > len(chrom_seq):
         return False
-    if chrom_seq[end - 1] != primer[-1]:
+    anchor = 0 if three_prime_left else len(query) - 1
+    if chrom_seq[pos + anchor] != query[anchor]:
         return False
     bad = 0
-    for i in range(len(primer) - 1):
-        if chrom_seq[pos + i] != primer[i]:
+    for i in range(len(query)):
+        if i != anchor and chrom_seq[pos + i] != query[i]:
             bad += 1
             if bad > mismatches:
                 return False
@@ -107,11 +119,15 @@ def _unique_sites(chrom_seq: str, primer: str, mismatches: int,
     seq = chrom_seq.upper()
     query = reverse_complement(primer) if reverse else primer
     found = set()
-    for seed in _seeds(query, mismatches):
-        seed = seed.upper()
-        for pos in _index_of(seq, seed):
-            if pos not in found and _match_at(seq, pos, query, mismatches):
-                found.add(pos)
+    query = query.upper()
+    for offset, seed in _seeds(query, mismatches):
+        for hit in _index_of(seq, seed):
+            start = hit - offset             # seed hit -> primer start
+            if start in found:
+                continue
+            if _match_at(seq, start, query, mismatches,
+                         three_prime_left=reverse):
+                found.add(start)
     return sorted(found)
 
 

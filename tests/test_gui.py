@@ -11,6 +11,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import tempfile
 
+import pytest
+pytest.importorskip("PySide6")  # GUI tests need Qt
+
 from varmelt.gui.model import Item, Project
 from varmelt.gui.plot import MeltChart
 
@@ -369,6 +372,7 @@ def test_project_schema():
 def test_dialogs_and_filter_string():
     from varmelt.gui.dialogs import (AddPairDialog, AddSequenceDialog,
                                      CLAMP_SIDES)
+    from PySide6.QtWidgets import QApplication
     from varmelt.gui.main import MainWindow, _file_filters
 
     app = QApplication.instance() or QApplication([])

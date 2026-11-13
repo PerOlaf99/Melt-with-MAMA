@@ -6,6 +6,8 @@ being open to any name.  No network access: fetch failures are stubbed.
 """
 
 import os
+
+import pytest
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -126,6 +128,7 @@ def _gui():
 
 
 def test_design_dialog_build_field_accepts_any_name():
+    pytest.importorskip("PySide6")
     from varmelt.gui.design import DesignDialog
     app = _gui()
     dlg = DesignDialog()
@@ -145,6 +148,7 @@ def test_design_dialog_build_field_accepts_any_name():
 
 
 def test_design_dialog_rejects_rsids_on_non_human_build():
+    pytest.importorskip("PySide6")
     from varmelt.gui.design import DesignDialog
     _gui()
     dlg = DesignDialog()
