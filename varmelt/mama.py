@@ -14,12 +14,15 @@ junction) and its 3' end sits 3-5 bp beyond the deletion.  The two 3'
 ends must differ at at least three bases.  The common primer is placed
 on whichever side of the deletion the sequence context prefers.
 
-Point mutations follow Thilly MAMA (Cha, Zarbl, Keohavong & Thilly,
-PCR Methods Appl. 1992): the 3' terminal base is allele-specific on
-both primers; an extra mismatch is introduced only on the wildtype
-primer at the penultimate (-2) 3' base, to destabilise WT priming on
-the mutant template. SNP amplicons are the same length; deletion
-amplicons differ.
+Point mutations follow Cha, Zarbl, Keohavong & Thilly (PCR Methods Appl.
+1992, PMID 1490171): each allele-specific primer has its allele's base at
+the 3' terminus and one deliberate mismatch at the penultimate (-2) base,
+so it forms a single mismatch with its own allele and two consecutive 3'
+mismatches with the other.  The rule is applied to both the WT and the MUT
+primer (the paper used the mutant primer only); the two primers then
+differ only at the 3' base.  No third mismatch is added (in the paper it
+abolished amplification of the target allele).  SNP amplicons are the
+same length; deletion amplicons differ.
 
 Reference: Birdsell et al., PLOS One 2012 (10.1371/journal.pone.0032866);
 Cha et al., PCR Methods Appl. 1992 (10.1101/gr.2.1.14).
@@ -161,8 +164,9 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
     """Ranked MAMA assays for a SNP, deletion or insertion.
 
     The common primer always carries *gc_tail* on its 5' end (labelling-primer
-    landing site).      SNPs use Thilly MAMA (3' allele base; extra penultimate mismatch on
-    the WT primer only; equal-length amplicons).  Deletions share a 5'
+    landing site).  SNPs follow Cha et al. 1992 (3' allele base plus one
+    penultimate mismatch on each allele-specific primer; equal-length
+    amplicons).  Deletions share a 5'
     start, with WT 3-5 bp into the deleted stretch and MUT 3-5 bp beyond
     it (>=3 3' differences; different-length amplicons).  Returns a
     :class:`DesignResult` whose candidates have a ``.mama``
@@ -335,7 +339,8 @@ def format_assay(c: Candidate) -> str:
 
 def _assay_extra_note(info: MamaInfo) -> str:
     if "snp" in info.kind or info.extra_mm_pos:
-        return f"Thilly extra mismatch 3'-{info.extra_mm_pos or 2}"
+        return (f"Cha/Thilly MAMA: mismatch at 3'-{info.extra_mm_pos or 2} "
+                f"on WT and MUT primers")
     diffs = _terminal_diffs(info.wt_as, info.mut_as)
     return f"shared 5' start, {diffs} 3' differences"
 
@@ -409,7 +414,8 @@ def _build_as(kind, ori, plen, mm_pos, refseq, altseq, idx, ref, alt):
 
 
 def _build_snp_as(ori, plen, mm_pos, refseq, altseq, idx, ref, alt):
-    """Thilly MAMA: 3' allele base plus a penultimate extra mismatch."""
+    """Cha et al. 1992 MAMA: 3' allele base plus a penultimate mismatch,
+    on both the WT and the MUT primer."""
     if ori == "forward":
         start = idx - plen + 1
         if start < 0:
@@ -419,7 +425,7 @@ def _build_snp_as(ori, plen, mm_pos, refseq, altseq, idx, ref, alt):
         if len(wt) != plen or len(mut) != plen:
             return None
         wt_as = _apply_extra_mm(wt.upper(), mm_pos)
-        mut_as = mut.upper()
+        mut_as = _apply_extra_mm(mut.upper(), mm_pos)
         return wt_as, mut_as, idx, idx
     end = idx + plen
     if end > len(refseq):
@@ -429,7 +435,7 @@ def _build_snp_as(ori, plen, mm_pos, refseq, altseq, idx, ref, alt):
     if len(wt) != plen or len(mut) != plen:
         return None
     wt_as = _apply_extra_mm(pr._revcomp(wt.upper()), mm_pos)
-    mut_as = pr._revcomp(mut.upper())
+    mut_as = _apply_extra_mm(pr._revcomp(mut.upper()), mm_pos)
     return wt_as, mut_as, idx, idx
 
 
@@ -608,7 +614,7 @@ def _with_common(ori, wt_as, mut_as, wt_3p, mut_3p, refseq, altseq,
         extra_mm_pos=mm_pos, wt_forward=wt_fwd, wt_reverse=wt_rev,
         mut_forward=mut_fwd, mut_reverse=mut_rev, delta_tm=dt)
     who = rsid if rsid else f"{chrom}:{pos} {ref or '-'}>{alt or '-'}"
-    extra = (f"Thilly WT -{mm_pos}" if kind == "snp"
+    extra = (f"Cha/Thilly -{mm_pos}" if kind == "snp"
              else f"{len(wt_amp)}/{len(mut_amp)} bp")
     name = f"{who} — {info.kind}, {ori}, {extra}"
     assay = MamaCandidate(
@@ -703,8 +709,9 @@ def expected_products(kind: str) -> tuple:
 
     Deletions/insertions: the WT primer matches the reference, so exactly
     the target; the MUT primer spans the junction, so nothing.  Point
-    mutations: the WT primer carries the deliberate penultimate mismatch and
-    the MUT primer the alternative 3' base, so neither primes.
+    mutations: both allele-specific primers carry the deliberate penultimate
+    mismatch (the MUT primer also has the alternative 3' base), so neither
+    primes on the reference.
     """
     return (0, 0) if "snp" in kind else (1, 0)
 

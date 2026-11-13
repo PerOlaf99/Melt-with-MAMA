@@ -102,8 +102,10 @@ def test_mama_snp_gc_tail_not_ctce_clamp():
     assert assay.info.label_primer == mama.MAMA_GC_TAIL
     assert assay.info.extra_mm_pos == 2
     assert assay.info.wt_as[-1] != assay.info.mut_as[-1]
-    assert assay.info.wt_as[-2] != assay.info.mut_as[-2], (
-        "Thilly extra mismatch is on the WT primer penultimate base")
+    assert assay.info.wt_as[-2] == assay.info.mut_as[-2], (
+        "Cha et al. 1992: both primers carry the same penultimate mismatch")
+    assert assay.info.wt_as[:-1] == assay.info.mut_as[:-1], (
+        "WT and MUT primers differ only at the 3' allele base")
     assert assay.product_len_wt == assay.product_len_mut
     sets = assay.primer_sets()
     assert sets[0]["length"] == sets[1]["length"]
@@ -344,3 +346,30 @@ def test_inpcr_exact_3p_two_blocks_penultimate_mismatch():
                            exact_3p=1)
     assert not inpcr._match_at(tmpl, 0, tmpl[:-2] + "T" + tmpl[-1], 2,
                                exact_3p=2)
+
+
+def test_snp_primers_follow_cha_1992():
+    # Each allele-specific primer: own allele at the 3' end, one deliberate
+    # mismatch at -2, otherwise identical to the genome (no third mismatch).
+    from varmelt import primers as pr
+    seq = _seq_case("G", "A")
+    res = mama.design_mama(chrom="ref", pos=250, ref="G", alt="A",
+                           refseq_override=seq, genome="")
+    seen = set()
+    for c in res.candidates:
+        a = c.mama
+        n = len(a.info.wt_as)
+        if a.orientation == "forward":
+            genomic = seq[250 - n + 1:251]
+            wt, mut = a.info.wt_as, a.info.mut_as
+            alleles = ("G", "A")
+        else:
+            genomic = pr._revcomp(seq[250:250 + n])
+            wt, mut = a.info.wt_as, a.info.mut_as
+            alleles = (pr._revcomp("G"), pr._revcomp("A"))
+        for primer, allele in ((wt, alleles[0]), (mut, alleles[1])):
+            assert primer[-1] == allele
+            assert primer[-2] != genomic[-2]
+            assert primer[:-2] == genomic[:-2]
+        seen.add(a.orientation)
+    assert seen == {"forward", "reverse"}
