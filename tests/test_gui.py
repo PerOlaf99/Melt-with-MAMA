@@ -1229,7 +1229,11 @@ def test_fragment_and_mama_are_separate_windows():
                        for i in range(d.table.columnCount())]
     ok(heads(frag) == FRAGMENT_COLUMNS and heads(mama) == MAMA_COLUMNS,
        "each window has its own result columns")
-    mama.tail_box.setChecked(False)
+    ok(mama.tail_box.text() == "ON" and mama.gc_tail_edit.isEnabled(),
+       "labelling tail button starts ON")
+    mama.tail_box.click()
+    ok(mama.tail_box.text() == "OFF" and not mama.tail_box.isChecked(),
+       "one click switches the labelling tail OFF")
     ok(not mama.gc_tail_edit.isEnabled(), "tail sequence greys out when off")
     ok(mama._base()["label_tail"] is False and mama._base()["gc_tail"] == "",
        "untick passes no tail to the engine")

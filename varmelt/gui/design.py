@@ -33,6 +33,17 @@ MAMA_SCORE_NOTE = ("Score 0-100: dTm + deletion bonus + 3' differences (>=3) "
                    "deletion/insertion WT 1 / MUT 0, point mutation WT 0 / "
                    "MUT 0.")
 
+# Labelling-tail ON/OFF button: clear border in both states, green when on.
+TAIL_TOGGLE_STYLE = (
+    "QPushButton { border: 2px solid #777; border-radius: 4px; "
+    "padding: 3px 14px; font-weight: bold; background: #e6e6e6; "
+    "color: #444; }"
+    "QPushButton:checked { border-color: #1e7b34; background: #2e9e4a; "
+    "color: white; }"
+    "QPushButton:hover { border-color: #333; }"
+    "QPushButton:checked:hover { border-color: #145524; }"
+    "QPushButton:focus { outline: none; }")
+
 FRAGMENT_COLUMNS = ["Variant / set", "Score", "Fragment", "Shape", "\u0394area",
                     "FP/RP Tm", "Clamp", "Primers"]
 MAMA_COLUMNS = ["Variant / set", "Score", "Product", "Type", "In-silico PCR",
@@ -247,24 +258,37 @@ class DesignDialog(QDialog):
         self.maxfrag_spin.setRange(100, 500)
         self.maxfrag_spin.setValue(240)
         # MAMA only: optional 5' labelling tail on the common primer.
-        self.tail_box = QCheckBox("attach to the 5\u2032 end of the common primer")
-        self.tail_box.setChecked(True)
+        # A checkable button with a clear border and an explicit ON/OFF
+        # label reads better than a small checkbox on every theme.
+        self.tail_box = QPushButton()
+        self.tail_box.setCheckable(True)
+        self.tail_box.setMinimumWidth(110)
+        self.tail_box.setStyleSheet(TAIL_TOGGLE_STYLE)
         self.tail_box.setToolTip(
-            "The tail is the landing site for a fluorescent labelling "
-            "primer added to the PCR.  Untick for unlabelled common "
-            "primers.")
+            "Click to switch.  ON: the common primer gets the 5\u2032 tail, "
+            "the landing site for a fluorescent labelling primer added to "
+            "the PCR.  OFF: plain (untailed) common primer.")
         self.gc_tail_edit = QLineEdit("CGCCCGCCGCGCCCCGCG")
         self.gc_tail_edit.setToolTip(
             "5' tail on the common primer; also the labelling-primer "
             "sequence")
-        self.tail_box.toggled.connect(self.gc_tail_edit.setEnabled)
+        self.tail_box.toggled.connect(self._sync_tail_toggle)
+        self.tail_box.setChecked(True)
+        self._sync_tail_toggle(True)
+        tail_row = QHBoxLayout()
+        tail_row.addWidget(self.tail_box)
+        self.tail_hint = QLabel("5\u2032 tail on the common primer")
+        self.tail_hint.setStyleSheet("color:#555;")
+        tail_row.addWidget(self.tail_hint)
+        tail_row.addStretch(1)
         if self._mama:
-            form.addRow("Labelling tail", self.tail_box)
+            form.addRow("Labelling tail", tail_row)
             form.addRow("Tail sequence", self.gc_tail_edit)
             self.maxfrag_spin.hide()
         else:
             form.addRow("Max fragment (bp)", self.maxfrag_spin)
             self.tail_box.hide()
+            self.tail_hint.hide()
             self.gc_tail_edit.hide()
         if self._mama:
             self.mode_info = QLabel(
@@ -372,6 +396,11 @@ class DesignDialog(QDialog):
         body.addLayout(add_row)
 
     # ------------------------------------------------------------ design - #
+    def _sync_tail_toggle(self, on: bool):
+        """Keep the labelling-tail button text and the sequence field in step."""
+        self.tail_box.setText("ON" if on else "OFF")
+        self.gc_tail_edit.setEnabled(bool(on))
+
     def _set_build_hg19(self):
         self.genome_combo.setCurrentText("hg19")
         self.status.setText(
