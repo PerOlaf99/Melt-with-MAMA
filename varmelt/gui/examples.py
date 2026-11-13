@@ -244,7 +244,7 @@ primers could also prime somewhere else.</p>
     wildtype and mutant controls.</li>
 <li>Deletions follow a different rule (shared 5\u2032 start; WT primer ends
     3\u20135&nbsp;bp inside the deleted stretch, MUT primer 3\u20135&nbsp;bp past
-    the junction) \u2014 see Help \u2192 User manual, MAMA section.</li>
+    the junction) \u2014 see Help \u2192 User manual, section 4.</li>
 </ul>
 <p style="color:#666">Cha RS, Zarbl H, Keohavong P, Thilly WG. Mismatch
 amplification mutation assay (MAMA): application to the c-H-ras gene.

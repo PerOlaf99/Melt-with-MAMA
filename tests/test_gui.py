@@ -1463,6 +1463,39 @@ def test_mama_braf_example_and_manual():
         ok(needle in help_docs.MANUAL_HTML, f"manual mentions: {needle}")
 
 
+def test_user_manual_window_and_contents():
+    import re
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui import help_docs
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    html = help_docs.MANUAL_HTML
+    anchors = set(re.findall(r'<a name="([^"]+)"', html))
+    links = set(re.findall(r'<a href="#([^"]+)"', html))
+    ok(links and links <= anchors, "every contents link has its section")
+    nums = [int(n) for n in re.findall(r"</a>(\d+)\. ", html)]
+    ok(nums == list(range(1, len(nums) + 1)), "sections numbered 1..n")
+    for needle in ("+ sequence", "+ wt/mut", "Duplicate", "Sort by Ticked",
+                   "Save as Sub-project", "Import variant list",
+                   "Set build hg19", ".candidates.json", "Ctrl+M",
+                   "no undo", "Fragment design (CTCE)"):
+        ok(needle in html, f"manual documents: {needle}")
+    ok("Design…</b> to build" not in html, "old 'Design…' button text gone")
+    ok("MAMA" in help_docs.ABOUT_HTML, "About mentions MAMA")
+
+    win = MainWindow()
+    win.show()
+    win._user_manual()
+    app.processEvents()
+    dlg = win._manual_dlg
+    ok(dlg.isVisible() and not dlg.isModal(),
+       "manual opens in a non-modal window")
+    ok("MAMA assay design" in dlg.browser.toPlainText(),
+       "manual window shows the current manual")
+    dlg.close(); win.close()
+
+
 if __name__ == "__main__":
     test_model_compute_roundtrip()
     test_project_schema()
@@ -1494,6 +1527,7 @@ if __name__ == "__main__":
     test_designed_insertion_3prime_clamp_overlays()
     test_legend_short_labels_and_modes()
     test_mama_braf_example_and_manual()
+    test_user_manual_window_and_contents()
     print("\n" + ("ALL GUI TESTS PASSED" if failures == 0
                   else f"{failures} FAILURE(S)"))
     sys.exit(1 if failures else 0)

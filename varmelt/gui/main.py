@@ -1434,32 +1434,22 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSortIndicator(sec, order)
 
     def _user_manual(self):
-        """Show the built-in HTML user manual (Help → User manual / F1)."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox
-        dlg = QDialog(self)
-        dlg.setWindowTitle(help_docs.MANUAL_TITLE)
-        dlg.resize(640, 520)
-        lay = QVBoxLayout(dlg)
-        browser = QTextBrowser()
-        browser.setOpenExternalLinks(True)
-        browser.setHtml(help_docs.MANUAL_HTML)
-        lay.addWidget(browser)
-        box = QDialogButtonBox(QDialogButtonBox.Ok)
-        box.accepted.connect(dlg.accept)
-        lay.addWidget(box)
-        dlg.exec()
+        """Help -> User manual (F1): a non-modal reading window, so the
+        program stays usable while the manual is open; the contents line
+        links to each section."""
+        dlg = self._show_html_window(help_docs.MANUAL_TITLE,
+                                     help_docs.MANUAL_HTML,
+                                     attr="_manual_dlg")
+        dlg.resize(820, 720)
+        dlg.browser.setOpenLinks(True)
 
     def _about(self):
-        QMessageBox.about(self, "MeltScope",
-                          f"MeltScope v{APP_VERSION} — WinMelt-style "
-                          "melting-profile "
-                          "workbench.\n\nPaste any DNA fragment (or "
-                          "wildtype/mutant pair), add a GC clamp, adjust "
-                          "the salt, and inspect the per-base melt map and "
-                          "the 20-bp primer set. Projects can be saved and "
-                          "reopened to revisit or adjust results.\n\n"
-                          "Melting core: Blossey–Carlon / DNAMelting port "
-                          "(varmelt.reference).")
+        box = QMessageBox(self)
+        box.setWindowTitle("About MeltScope")
+        box.setTextFormat(Qt.RichText)
+        box.setText(help_docs.ABOUT_HTML.replace(
+            "<h3>MeltScope</h3>", f"<h3>MeltScope v{APP_VERSION}</h3>"))
+        box.exec()
 
     def _update_title(self):
         self.setWindowTitle(

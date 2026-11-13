@@ -27,15 +27,18 @@ HRM analysis package.
     <i>any</i> variant in the fragment.</li>
 <li><b>MAMA assay design</b> &mdash; three primers (wildtype, mutant and a
     common primer) for <i>one known</i> variant; each allele-specific primer
-    only extends on its own allele (section&nbsp;3).</li>
+    only extends on its own allele (section&nbsp;4).</li>
 </ul>
 <p>New to MAMA?  Start with <b>Examples &rarr; MAMA: BRAF V600E, with
 explanation</b>.</p>
 
-<h3>1. Typical workflow</h3>
+<p><b>Contents:</b> <a href="#workflow">1. Typical workflow</a> &middot; <a href="#list">2. The amplicon list</a> &middot; <a href="#fragment">3. Fragment design (CTCE)</a> &middot; <a href="#mama">4. MAMA assay design</a> &middot; <a href="#tiling">5. Tiling-walk of a long template</a> &middot; <a href="#chart">6. Reading the melt chart</a> &middot; <a href="#score">7. Score (0–100)</a> &middot; <a href="#examples">8. Examples</a> &middot; <a href="#files">9. Files and keyboard shortcuts</a> &middot; <a href="#refs">10. Background and references</a></p>
+<h3><a name="workflow"></a>1. Typical workflow</h3>
 <ol>
-<li><b>Add sequences</b> or a <b>wildtype / mutant pair</b> (left panel buttons),
-    or open <b>Design…</b> to build candidates from an rsID or genomic position.</li>
+<li>Add a sequence with <b>+ sequence</b> or a wildtype/mutant pair with
+    <b>+ wt/mut</b> (left panel), or design from an rsID or genomic position
+    with <b>Design &rarr; Fragment design (CTCE)…</b> or <b>Design &rarr;
+    MAMA assay design…</b>.</li>
 <li>Tick amplicons in the list to overlay their melt maps on the chart.
     Rows are numbered <b>1, 2, 3, …</b> — the same # starts each row of the
     primer table on the right. Type in the <i>filter amplicons</i> box to
@@ -49,22 +52,61 @@ explanation</b>.</p>
     parameters: the Primer3 annealing-Tm range (optimal / min / max Tx),
     primer length, salt concentration, and the app-wide defaults for Na+
     and the fragment-length cap. The next design / tiling run uses them.</li>
-<li><b>Export</b> primers (CSV) or chart image for the lab notebook / oligo order.
+<li><b>Export</b> primers (<b>File &rarr; Export primers (CSV)…</b> or
+    <b>Save CSV…</b> above the primer table) or the chart image
+    (<b>File &rarr; Export chart image…</b>) for the lab notebook / oligo order.
     <b>File → Save sequences…</b> saves the DNA sequences of ticked amplicons
     as FASTA, TSV, or CSV — one file per run, suitable for downstream primer
     design or alignment tools.</li>
 </ol>
 
-<h3>2. Fragment design (CTCE)</h3>
+<h3><a name="list"></a>2. The amplicon list</h3>
+<ul>
+<li><b>Tick</b> an amplicon to draw it on the chart; the number in front of
+    each name is also used in the primer table and the chart legend.
+    <i>Click</i> a row to select it (Ctrl/Shift+click selects several).</li>
+<li><b>+ sequence</b> / <b>+ wt/mut</b> &mdash; add a single sequence, or a
+    wildtype and mutant version of the same fragment, with the GC clamp side
+    you choose.</li>
+<li><b>Edit…</b> changes the selected amplicon (e.g. a base or the clamp
+    side); <b>Duplicate</b> copies it, so you can try a variation and keep the
+    original; <b>Delete</b> removes it; <b>Clear</b> removes all amplicons
+    at once &mdash; there is no undo, so save the project first if you may
+    need them again.</li>
+<li><b>Sort by Ticked</b> moves the ticked amplicons to the top.</li>
+<li><b>Save Ticked</b> writes the <i>ticked</i> amplicons to a JSON file;
+    <b>Save as Sub-project</b> writes the <i>selected</i> (highlighted) rows
+    as a new project file &mdash; handy for passing a short list to a
+    colleague or keeping the final assays apart from the trials.</li>
+<li>Right-click a row for the same actions (Edit, Duplicate, Rename,
+    Delete).  The <i>filter amplicons</i> box above the list shows only names
+    containing the text you type.</li>
+</ul>
+
+<h3><a name="fragment"></a>3. Fragment design (CTCE)</h3>
 <ul>
 <li>Enter one variant per line: <code>rs113488022</code> or
     <code>chr7:140453136 A>T</code>.</li>
-<li>Choose genome build, then <b>Design</b>. Candidates appear in a table.</li>
+<li>Choose genome build, then <b>Design</b>. Candidates appear in a table.
+    The build box accepts any assembly UCSC hosts (hg38, hg19, mm39, rn6,
+    danRer11, …); rsIDs work on human builds only, so use coordinates for
+    other species.  <b>Set build hg19</b> is a shortcut for lists called
+    against GRCh37.</li>
+<li><b>Import variant list…</b> reads variants from a spreadsheet
+    (.ods / .xlsx), a text table (.csv / .tsv / .txt) or a .vcf into the
+    variant box; columns such as CHROM/POS/REF/ALT are recognised.</li>
+<li><b>Max fragment (bp)</b> caps the fragment length including the GC clamp
+    (CTCE separates best on short fragments).</li>
 <li><b>Sort</b> by clicking column headers (Score, Fragment length, Δarea, Variant/chr, …).
     Numeric columns sort by value, not by text.</li>
 <li><b>Multi-select</b>: Ctrl+click to toggle rows, Shift+click for a range,
     then <b>Add selected</b>. Double-click adds one row.</li>
 <li><b>Add best of each variant</b> keeps the highest-scoring candidate per variant.</li>
+<li><b>Save candidates…</b> stores the whole candidate table (with its genome
+    build and settings) as a <code>.candidates.json</code> file;
+    <b>Load candidates…</b> brings it back later without re-running the
+    design.  A file saved in the MAMA window only opens in the MAMA window,
+    and vice versa.</li>
 <li>The annealing-Tm targets found by Primer3 come from <b>Settings →
     Primer design settings…</b>: optimal / min / max Tx (defaults
     60 / 46 / 67 °C, loosened so AT-rich regions still find binding sites),
@@ -72,7 +114,7 @@ explanation</b>.</p>
     sits in that range.</li>
 </ul>
 
-<h3>3. MAMA assay design</h3>
+<h3><a name="mama"></a>4. MAMA assay design</h3>
 <p>
 <b>Design &rarr; MAMA assay design…</b> (Ctrl+M) designs, for each variant,
 a <b>WT primer</b> and a <b>MUT primer</b> that end on the variant, plus one
@@ -112,7 +154,9 @@ sample: WT&nbsp;+&nbsp;common and MUT&nbsp;+&nbsp;common.
 <li>The table lists one row per primer set ([WT] and [MUT]) with product
     length, variant type, in-silico result, Tm of the allele-specific and
     common primer, orientation and tail.  <b>Add selected</b> puts the assay
-    in the project; the primer table then shows both sets.</li>
+    in the project; the primer table then shows both sets.  Import variant
+    list, Set build hg19 and Save / Load candidates work as in fragment
+    design (section&nbsp;3).</li>
 <li>MAMA specificity depends strongly on PCR conditions.  In the original
     paper a two-step cycle and added glycerol improved discrimination, and the
     authors noted that optimal conditions may differ between sequences:
@@ -121,7 +165,7 @@ sample: WT&nbsp;+&nbsp;common and MUT&nbsp;+&nbsp;common.
     background.</li>
 </ul>
 
-<h3>4. Tiling-walk of a long template</h3>
+<h3><a name="tiling"></a>5. Tiling-walk of a long template</h3>
 <p>
 <b>Design → Fragment tiling…</b> (Ctrl+T) covers a long DNA template with
 overlapping amplicons — paste the sequence or fetch a GenBank accession
@@ -154,7 +198,7 @@ windows are cut shorter, monotonic with temperature.
     is shown folded back onto the circle.</li>
 </ul>
 
-<h3>5. Reading the melt chart</h3>
+<h3><a name="chart"></a>6. Reading the melt chart</h3>
 <ul>
 <li><b>Solid line</b> — reference (wildtype) local Tm along the fragment.</li>
 <li><b>Dashed red</b> — variant allele on the same physical layout.</li>
@@ -174,7 +218,7 @@ windows are cut shorter, monotonic with temperature.
     double-click or Reset to show all.</li>
 </ul>
 
-<h3>6. Score (0–100)</h3>
+<h3><a name="score"></a>7. Score (0–100)</h3>
 <p>
 Dip-free shape, resolvable WT/mut difference, primer Tm near optimum,
 short fragment, and dbSNP-free 3′ ends. Higher is better for CTCE-oriented design;
@@ -187,7 +231,7 @@ Tm in range and a short product; &minus;40 when the in-silico PCR does not
 give the expected products.
 </p>
 
-<h3>7. Examples</h3>
+<h3><a name="examples"></a>8. Examples</h3>
 <ul>
 <li><b>BRAF 127 bp flat vs sloped</b> &mdash; the same amplicon with the GC
     clamp on either end: a flat melting plateau versus a clean slope.</li>
@@ -201,14 +245,29 @@ give the expected products.
     read the two reactions and the in-silico check.</li>
 </ul>
 
-<h3>8. Files</h3>
-<ul>
-<li>Projects: <code>*.varmelt.json</code></li>
-<li>Primer table: CSV export from the main window</li>
-<li>Chart: File → Export chart image</li>
-</ul>
+<h3><a name="files"></a>9. Files and keyboard shortcuts</h3>
+<table cellpadding="3">
+<tr><td>Project</td><td><code>*.varmelt.json</code></td>
+    <td>File &rarr; New / Open… / Save / Save As…</td></tr>
+<tr><td>Ticked amplicons / sub-project</td><td><code>*.json</code></td>
+    <td>Save Ticked, Save as Sub-project (also in the File menu)</td></tr>
+<tr><td>Design candidates</td><td><code>*.candidates.json</code></td>
+    <td>Save / Load candidates in the design windows</td></tr>
+<tr><td>Primer table</td><td><code>*.csv</code></td>
+    <td>File &rarr; Export primers (CSV)…, or Copy / Save CSV… above the
+    table</td></tr>
+<tr><td>Sequences</td><td>FASTA / TSV / CSV</td>
+    <td>File &rarr; Save sequences… (ticked amplicons)</td></tr>
+<tr><td>Chart</td><td><code>*.png</code></td>
+    <td>File &rarr; Export chart image…</td></tr>
+</table>
+<p>
+<b>Shortcuts:</b> Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as,
+Ctrl+D fragment design, Ctrl+M MAMA design, Ctrl+T fragment tiling,
+F1 this manual, Ctrl+Q quit.
+</p>
 
-<h3>9. Background and references</h3>
+<h3><a name="refs"></a>10. Background and references</h3>
 <p>
 CTCE was developed by Per Olaf Ekstr&oslash;m and colleagues at the Norwegian
 Radium Hospital (Oslo University Hospital) with William G. Thilly (MIT).
@@ -251,9 +310,15 @@ trace analysis tool (e.g. Limoncello Scorer); this GUI focuses on fragment desig
 ABOUT_HTML = """
 <html><body style="font-family: sans-serif;">
 <h3>MeltScope</h3>
-<p>Variant melting profile design for <b>CTCE</b> (cycling temperature
-capillary electrophoresis) class assays.</p>
-<p>Standalone Python re-implementation of the Variant Melting Profile
-concept (see project README).</p>
+<p>Assay design for <b>CTCE</b> (cycling temperature capillary
+electrophoresis) fragments and <b>MAMA</b> (mismatch amplification mutation
+assay) primer sets, with predicted melting maps.</p>
+<p>A standalone Python re-implementation of the Variant Melting Profile tool
+(Ekstr&oslash;m, Nakken, Johansen &amp; Hovig, <i>BMC Res Notes</i>
+2015;8:667); melting core: Blossey&ndash;Carlon / DNAMelting port.  MAMA
+design follows Cha, Zarbl, Keohavong &amp; Thilly, <i>PCR Methods Appl</i>
+1992.</p>
+<p>See Help &rarr; User manual (F1), section 10, for background and
+references.</p>
 </body></html>
 """
