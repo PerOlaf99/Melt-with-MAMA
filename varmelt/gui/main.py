@@ -271,6 +271,19 @@ class MainWindow(QMainWindow):
         tools.addWidget(b_minus)
         tools.addWidget(b_plus)
         tools.addWidget(b_reset)
+        tools.addSpacing(12)
+        tools.addWidget(QLabel("Legend"))
+        self.legend_combo = QComboBox()
+        self.legend_combo.addItem("Inside", "inside")
+        self.legend_combo.addItem("Outside", "outside")
+        self.legend_combo.addItem("Hidden", "hidden")
+        self.legend_combo.setToolTip(
+            "Inside: top right over the plot.  Outside: in a margin right of "
+            "the plot, so it never covers a curve.  Hidden: no legend -- the "
+            "numbers match the amplicon list.")
+        self.legend_combo.currentIndexChanged.connect(self._on_legend_mode)
+        tools.addWidget(self.legend_combo)
+        self._restore_legend_mode()
         rlay.addLayout(tools)
         rlay.addWidget(self.chart, stretch=1)
 
@@ -832,6 +845,19 @@ class MainWindow(QMainWindow):
         self.info.setText("no item selected")
         self.statusBar().showMessage("new project")
 
+    def _restore_legend_mode(self):
+        from .app_settings import settings
+        mode = str(settings().value("legend_mode", "inside") or "inside")
+        i = self.legend_combo.findData(mode)
+        self.legend_combo.setCurrentIndex(i if i >= 0 else 0)
+        self.chart.set_legend_mode(self.legend_combo.currentData())
+
+    def _on_legend_mode(self, _index=None):
+        from .app_settings import settings
+        mode = self.legend_combo.currentData()
+        self.chart.set_legend_mode(mode)
+        settings().setValue("legend_mode", mode)
+
     def _render_plots(self):
         """Rebuild the single overlay plot from every ticked item."""
         shown = [it for it in self.project.items if it.plot and it.result
@@ -847,8 +873,11 @@ class MainWindow(QMainWindow):
             if fd is None:
                 continue
             color = PALETTE[idx % len(PALETTE)]
+            num = self.project.items.index(it) + 1   # same number as the list
             datasets.append({
                 "name": it.name,
+                "num": num,
+                "legend": f"{num}  {legend_label(it)}",
                 "paired": bool(fd["paired"]),
                 "ref_prof": fd["ref_prof"],
                 "alt_prof": fd["alt_prof"],
@@ -1494,3 +1523,47 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
+
+
+def _short_variant(text: str) -> str:
+    """``chr16:81185435 ACATTG...TTG>A`` -> ``chr16:81185435 del23``; long
+    alleles are summarised, short ones (``G>A``, ``AC>A``) kept."""
+    import re
+
+    def repl(m):
+        ref, alt = m.group(1), m.group(2)
+        if len(ref) <= 6 and len(alt) <= 6:
+            return m.group(0)
+        ref = "" if ref in ("-", ".") else ref
+        alt = "" if alt in ("-", ".") else alt
+        k = 0
+        while k < min(len(ref), len(alt)) and ref[k] == alt[k]:
+            k += 1                                  # VCF anchor base(s)
+        r, a = len(ref) - k, len(alt) - k
+        if r and not a:
+            return f"del{r}"
+        if a and not r:
+            return f"ins{a}"
+        return f"delins{r}/{a}"
+    return re.sub(r"\b([ACGTN\-.]+)>([ACGTN\-.]+)\b", repl, text)
+
+
+def legend_label(it, limit: int = 34) -> str:
+    """Short chart-legend text for a list item (the list number is added
+    by the caller): the variant/name part, fragment length and clamp side,
+    e.g. ``chr7:140453136 G>A \u00b7 121 bp \u00b7 3\u2032``."""
+    name = (it.name or "").split(" \u2014 ")[0].strip()
+    name = _short_variant(name)
+    if len(name) > limit:
+        name = name[:limit - 1] + "\u2026"
+    parts = [name]
+    try:
+        n = it.fragment_length()
+    except Exception:                                   # noqa: BLE001
+        n = 0
+    if n:
+        parts.append(f"{n} bp")
+    side = it.clamp_side() if hasattr(it, "clamp_side") else None
+    if side in ("5'", "3'"):
+        parts.append(side.replace("'", "\u2032"))
+    return " \u00b7 ".join(parts)

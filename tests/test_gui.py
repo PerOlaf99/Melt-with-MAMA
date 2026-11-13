@@ -1354,6 +1354,68 @@ def test_designed_insertion_3prime_clamp_overlays():
     win.close()
 
 
+def test_legend_short_labels_and_modes():
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow, legend_label, _short_variant
+    from varmelt.gui.model import Item
+
+    from varmelt.gui.app_settings import settings
+    app = QApplication.instance() or QApplication([])
+    saved = settings().value("legend_mode")       # the user's own choice
+    ok(_short_variant("chr16:81185435 ACATTGATGGATAGCCAGGAGTTG>A")
+       == "chr16:81185435 del23", "long deletion summarised as del23")
+    ok(_short_variant("chr7:140453136 G>A") == "chr7:140453136 G>A",
+       "a short variant is kept as written")
+    ok(_short_variant("chr1:5 A>AGGGGGGGG") == "chr1:5 ins8",
+       "long insertion summarised as ins8")
+
+    win = MainWindow()
+    win.resize(1200, 800)
+    win.show()
+    win.legend_combo.setCurrentIndex(win.legend_combo.findData("inside"))
+    win.project.add(Item(kind="pair", name="first one", wt=SEQ, mut=MUT,
+                         clamp="5'"))
+    win.project.add(Item(kind="pair",
+                         name="chr7:140453136 G>A \u2014 79 bp fragment, "
+                              "flat/slope ok", wt=SEQ, mut=MUT, clamp="3'"))
+    for it in win.project.items:
+        it.compute(win.project.na)
+    win._refresh_list()
+    win._render_plots()
+    ch = win.chart
+    ch.grab()
+    texts = ch._legend_texts
+    ok(texts[0].startswith("1  first one") and "5\u2032" in texts[0],
+       "legend line starts with the list number")
+    ok(texts[2].startswith("2  chr7:140453136 G>A \u00b7")
+       and "fragment" not in texts[2] and "3\u2032" in texts[2],
+       "designed name shortened to variant, length and clamp")
+    ok(texts[3].startswith("2  mutant"), "mutant line carries the number too")
+    ok(ch._legend_lines == 4, "inside: legend drawn")
+
+    plot_w_inside = ch.width() - ch._pad_l - ch._pad_r
+    win.legend_combo.setCurrentIndex(win.legend_combo.findData("outside"))
+    ch.grab()
+    ok(ch.legend_mode() == "outside" and ch._legend_lines == 4,
+       "outside: legend still drawn")
+    ok(ch.width() - ch._pad_l - ch._pad_r < plot_w_inside,
+       "outside: the plot narrows to make room, so no curve is covered")
+
+    win.legend_combo.setCurrentIndex(win.legend_combo.findData("hidden"))
+    ch.grab()
+    ok(ch._legend_lines == 0 and ch._pad_r == ch._pad_r_base,
+       "hidden: no legend, full plot width")
+
+    ok(settings().value("legend_mode") == "hidden", "choice is remembered")
+    win2 = MainWindow()
+    ok(win2.chart.legend_mode() == "hidden", "a new window restores it")
+    win2.close(); win.close()
+    if saved is None:
+        settings().remove("legend_mode")
+    else:
+        settings().setValue("legend_mode", saved)
+
+
 if __name__ == "__main__":
     test_model_compute_roundtrip()
     test_project_schema()
@@ -1383,6 +1445,7 @@ if __name__ == "__main__":
     test_mama_window_runs_engine_and_shows_inpcr()
     test_candidate_file_opens_only_in_matching_window()
     test_designed_insertion_3prime_clamp_overlays()
+    test_legend_short_labels_and_modes()
     print("\n" + ("ALL GUI TESTS PASSED" if failures == 0
                   else f"{failures} FAILURE(S)"))
     sys.exit(1 if failures else 0)

@@ -90,7 +90,10 @@ class MeltChart(QWidget):
         self._rubber = None
         self._pan = None
         self._pad_l, self._pad_r = 52, 18
+        self._pad_r_base = 18
         self._pad_t, self._pad_b = 14, 30
+        self._legend_mode = "inside"
+        self._legend_texts = []
 
     # --------------------------------------------------------- data input - #
     def set_datasets(self, datasets):
@@ -99,6 +102,42 @@ class MeltChart(QWidget):
         self._compute_bounds()
         self.fit()
         self.update()
+
+    LEGEND_MODES = ("inside", "outside", "hidden")
+
+    def legend_mode(self) -> str:
+        return self._legend_mode
+
+    def set_legend_mode(self, mode: str):
+        """``inside`` (top right over the plot), ``outside`` (in a margin
+        right of the plot, so it never covers a curve) or ``hidden``."""
+        if mode not in self.LEGEND_MODES:
+            mode = "inside"
+        self._legend_mode = mode
+        self.update()
+
+    def _legend_entries(self):
+        """(colour, solid, text) rows; a dataset's ``legend`` is its short
+        numbered label (the list number), falling back to its name."""
+        entries = []
+        for d in self._datasets:
+            name = d.get("legend") or d.get("name", "")
+            if d.get("dip"):
+                name += "  \u26a0 valley"
+            entries.append((d["color"], True, name, None))
+            if d.get("paired") and d.get("alt_prof"):
+                area = float(d.get("delta_area", 0.0))
+                num = d.get("num")
+                lead = f"{num}  " if num is not None else ""
+                entries.append((MUTANT_COLOR, False,
+                                f"{lead}mutant  \u0394area {area:.0f} "
+                                f"\u00b0C\u00b7bp", d.get("name")))
+        return entries
+
+    def _legend_box_width(self, fm, entries) -> int:
+        wmax = max((fm.horizontalAdvance(t or "") for _c, _s, t, _d in entries),
+                   default=0)
+        return 10 * 2 + 18 + wmax
 
     def clear(self, status="no data"):
         self._datasets = []
@@ -274,33 +313,26 @@ class MeltChart(QWidget):
         flush()
 
     def _draw_legend(self, qp, plot_w, plot_h):
-        entries = []
-        for d in self._datasets:
-            name = d.get("name", "")
-            if d.get("dip"):
-                name += "   \u26a0  valley"
-            entries.append((d["color"], True, name, None))
-            if d.get("paired") and d.get("alt_prof"):
-                area = float(d.get("delta_area", 0.0))
-                entries.append((MUTANT_COLOR, False,
-                                f"mutant   \u0394area {area:.0f} \u00b0C\u00b7bp",
-                                d.get("name")))
+        entries = self._legend_entries()
         if not entries:
             self._legend_lines = 0
             self._legend_texts = []
             return
         self._legend_texts = [t for _c, _sol, t, _d in entries]
+        if self._legend_mode == "hidden":
+            self._legend_lines = 0
+            return
         qp.setFont(QFont("Helvetica", 8))
         fm = qp.fontMetrics()
         row_h = fm.height() + 4
         padx, pady = 10, 8
-        x0 = self._pad_l + plot_w - padx
-        y = pady
-        # measure the widest entry text
-        wmax = 0
-        for _c, _sol, text, _d in entries:
-            wmax = max(wmax, fm.horizontalAdvance(text or ""))
-        bw = padx * 2 + 18 + wmax
+        bw = self._legend_box_width(fm, entries)
+        if self._legend_mode == "outside":
+            x0 = self.width() - 4               # right margin, beside the plot
+            y = self._pad_t
+        else:
+            x0 = self._pad_l + plot_w - padx    # top right, over the plot
+            y = pady
         bh = pady * 2 + row_h * len(entries)
         box = QRectF(x0 - bw, y, bw, bh)
         qp.setBrush(QColor(_CHART_CUR["legend_fill"]))
@@ -332,6 +364,14 @@ class MeltChart(QWidget):
         qp.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         qp.fillRect(0, 0, w, h, QColor(_CHART_CUR["bg"]))
+        # an outside legend gets its own margin right of the plot; mouse
+        # zoom/pan read the same _pad_r, so they stay in step
+        self._pad_r = self._pad_r_base
+        if self._legend_mode == "outside" and self._datasets:
+            qp.setFont(QFont("Helvetica", 8))
+            bw = self._legend_box_width(qp.fontMetrics(),
+                                        self._legend_entries())
+            self._pad_r = min(self._pad_r_base + bw + 8, max(w // 2, 60))
         pad_l, pad_r, pad_t, pad_b = (self._pad_l, self._pad_r,
                                       self._pad_t, self._pad_b)
         plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
