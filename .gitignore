@@ -12,4 +12,4 @@ tiling*.csv
 
 # editor / OS
 .DS_Store
-*.swp
+*.swp.venv/
