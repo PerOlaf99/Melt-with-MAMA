@@ -60,3 +60,73 @@ def test_mama_products_stay_in_range(ref, alt, lo, hi, tail):
         a = c.mama
         assert lo <= a.product_len_wt <= hi and lo <= a.product_len_mut <= hi
         assert a.product_len_wt == len(a.wt_amp)       # tail included
+
+
+def _stub_genome(monkeypatch, n=20000, seed=11):
+    """Serve a synthetic chromosome through the real genome code path and
+    record the window size each design asks for."""
+    from varmelt import genome as g
+    rng = random.Random(seed)
+    chrom = "".join(rng.choice("ACGT") for _ in range(n))
+    seen = {}
+
+    def start_end(a, c, w, centre=None, local_2bit=None):
+        seen["window"] = w
+        s0 = max(0, centre - w // 2)
+        return "chr1", s0, min(n, s0 + w), n
+    monkeypatch.setattr(g, "chrom_start_end", start_end)
+    monkeypatch.setattr(g, "fetch_sequence",
+                        lambda a, c, s0, e, local_2bit=None: chrom[s0:e])
+    monkeypatch.setattr(g, "normalise_assembly", lambda x: x)
+    return chrom, seen
+
+
+def test_long_ctce_fragments_on_genome_coordinates(monkeypatch):
+    chrom, seen = _stub_genome(monkeypatch)
+    pos = 10001
+    ref = chrom[pos - 1]
+    alt = "A" if ref != "A" else "T"
+    res = design.design_variant(chrom="chr1", pos=pos, ref=ref, alt=alt,
+                                genome="hg38", min_frag=450, max_frag=550,
+                                with_dbsnp=False)
+    assert seen["window"] >= 2 * (550 - len(GC_CLAMP))
+    assert res.candidates
+    assert all(450 <= c.fragment_len <= 550 for c in res.candidates)
+    assert max(c.fragment_len for c in res.candidates) > 500
+
+
+def test_long_mama_products_on_genome_coordinates(monkeypatch):
+    chrom, seen = _stub_genome(monkeypatch)
+    pos = 10001
+    ref = chrom[pos - 1]
+    alt = "A" if ref != "A" else "T"
+    res = mama.design_mama(chrom="chr1", pos=pos, ref=ref, alt=alt,
+                           genome="hg38", min_product=450, max_product=550,
+                           do_inpcr=False)
+    assert seen["window"] >= 2 * 550
+    assert res.candidates
+    assert all(450 <= c.mama.product_len_wt <= 550 for c in res.candidates)
+
+
+def test_inpcr_finds_products_longer_than_the_old_chunk_overlap(monkeypatch):
+    # an 800-bp product is longer than a chunk plus the old 320-bp overlap
+    # on each side (100 + 2*320 = 740), so with the old fixed overlap no
+    # chunk held it whole and it was missed
+    from varmelt import inpcr
+    rng = random.Random(2)
+    n = 3000
+    seq = list("".join(rng.choice("ACGT") for _ in range(n)))
+    fp, rp = "ACGTTGCATGCATGCTA", "TTGGCCAACCGGTTAACG"
+    seq[1200:1200 + len(fp)] = fp
+    end = 1200 + 800
+    seq[end - len(rp):end] = inpcr.reverse_complement(rp)
+    chrom = "".join(seq)
+    from varmelt import genome as g
+    monkeypatch.setattr(g, "fetch_chrom_sizes",
+                        lambda a, local_2bit=None: {"chr1": n})
+    monkeypatch.setattr(g, "fetch_sequence",
+                        lambda a, c, s0, e, local_2bit=None: chrom[s0:e])
+    monkeypatch.setattr(inpcr, "CHUNK_BP", 100)
+    inpcr.clear_cache()
+    prods = inpcr.amplicons("hg38", "chr1", fp, rp, 40, 1000)
+    assert (1200, 2000) in prods

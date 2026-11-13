@@ -1239,6 +1239,13 @@ def test_fragment_and_mama_are_separate_windows():
        "min > max is refused with a message")
     mama.minfrag_spin.setValue(60)
     mama.maxfrag_spin.setValue(250)
+    frag.maxfrag_spin.setValue(550)
+    ok("250 bp" in frag.long_fragment_note(),
+       "long CTCE fragments get a gentle note")
+    mama.maxfrag_spin.setValue(550)
+    ok(mama.long_fragment_note() == "", "no CTCE note in the MAMA window")
+    frag.maxfrag_spin.setValue(240)
+    mama.maxfrag_spin.setValue(250)
     heads = lambda d: [d.table.horizontalHeaderItem(i).text()
                        for i in range(d.table.columnCount())]
     ok(heads(frag) == FRAGMENT_COLUMNS and heads(mama) == MAMA_COLUMNS,

@@ -224,6 +224,16 @@ def _aligned_alt_index(k: int, idx: int, ref_len: int, alt_len: int):
     return k if k < idx + alt_len else None
 
 
+def needed_window(window: int, max_amplicon: int, allele_len: int = 1) -> int:
+    """Genomic window (bp, even) to fetch around a variant so an amplicon of
+    up to *max_amplicon* bp fits wherever the variant sits in it -- i.e. a
+    full amplicon on either side.  Never smaller than *window*; the old
+    fixed 500 bp left long fragments (e.g. 500 bp) with no room."""
+    need = 2 * int(max_amplicon) + int(allele_len) + 40
+    w = max(int(window), need)
+    return w + (w % 2)
+
+
 def design_variant(rsid: Optional[str] = None, chrom: str = "ref",
                    pos: int = 0, ref: str = "-", alt: str = "-",
                    genome: str = "hg38", window: int = WINDOW_DEFAULT,
@@ -250,6 +260,8 @@ def design_variant(rsid: Optional[str] = None, chrom: str = "ref",
     and fragment-length checks); the reason is in ``note``.
     """
     a = g.normalise_assembly(genome) if not refseq_override else genome
+    window = needed_window(window, max_frag - len(pr.GC_CLAMP),
+                           max(len(ref or ""), len(alt or "")))
     if rsid and refseq_override is None and ref in ("-", ""):
         # an rsID carries the coordinates: resolve them for the build
         # (mirrors the CLI; a failure raises with dbSNP's message).

@@ -584,6 +584,20 @@ class DesignDialog(QDialog):
         self._thread = None
         self._set_busy(False)
         self._show_candidates(cands, errors)
+        note = self.long_fragment_note()
+        if note:
+            self.status.setText(self.status.text() + "  \u2014  " + note)
+
+    CTCE_COMFORT_MAX = 300
+
+    def long_fragment_note(self) -> str:
+        """A gentle CTCE warning for long fragments (designs still run)."""
+        if self._mama or self.maxfrag_spin.value() <= self.CTCE_COMFORT_MAX:
+            return ""
+        return ('<font color="#a60">note: CTCE separates best on fragments '
+                'up to about 250 bp; longer fragments usually have several '
+                'melting domains \u2014 check each melt map for a single '
+                'domain next to the clamp</font>')
 
     def _show_candidates(self, cands, errors=()):
         """Repopulate the candidate table from a list of candidates.

@@ -182,10 +182,12 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
     """
     del salt_mm, with_dbsnp, max_frag, min_frag, opt_size, min_size, max_size
     ref_tmp, alt_tmp = _allele(ref), _allele(alt)
-    if max(len(ref_tmp), len(alt_tmp)) > 1:
-        window = max(int(window),
-                     2 * _MUT_FLANK + max(len(ref_tmp), len(alt_tmp)) + 80)
-        window += window % 2
+    alen = max(len(ref_tmp), len(alt_tmp), 1)
+    if alen > 1:
+        window = max(int(window), 2 * _MUT_FLANK + alen + 80)
+    # room for the longest product on either side of the variant
+    window = max(int(window), 2 * int(max_product) + alen + 80)
+    window += window % 2
     a, chrom_n, start, end, refseq, idx, ref, alt = _prepare(
         rsid, chrom, pos, ref, alt, genome, window, local_2bit,
         refseq_override)

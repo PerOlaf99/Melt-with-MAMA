@@ -170,7 +170,10 @@ def _iter_chunks(assembly: str, chrom: str, min_size: int, max_size: int,
     """
     sizes = _genome.fetch_chrom_sizes(assembly, local_2bit)
     csize = sizes[chrom]
-    key = (assembly, chrom, local_2bit, region)
+    # chunks must overlap by at least the longest product looked for, or a
+    # product straddling a chunk boundary is missed
+    overlap = max(OVERLAP_BP, int(max_size))
+    key = (assembly, chrom, local_2bit, region, overlap)
 
     with _SCAN_CACHE_LOCK:
         cached = _SCAN_CACHE.get(key)
@@ -185,10 +188,10 @@ def _iter_chunks(assembly: str, chrom: str, min_size: int, max_size: int,
 
     chunks: List[Tuple[int, str]] = []
     step = CHUNK_BP
-    start = max(0, rlo - OVERLAP_BP)
+    start = max(0, rlo - overlap)
     while start < rhi:
-        lo = max(0, start - OVERLAP_BP)
-        hi = min(csize, start + step + OVERLAP_BP)
+        lo = max(0, start - overlap)
+        hi = min(csize, start + step + overlap)
         seq = _genome.fetch_sequence(assembly, chrom, lo, hi, local_2bit)
         chunks.append((lo, seq))
         start += step

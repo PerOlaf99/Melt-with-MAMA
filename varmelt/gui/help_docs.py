@@ -99,7 +99,11 @@ explanation</b>.</p>
     range for the physical fragment, i.e. amplicon <i>plus</i> the 42-bp GC
     clamp (CTCE separates best on short fragments).  The shortest amplicon
     searched is 70&nbsp;bp, so fragments are at least 112&nbsp;bp.  The default
-    range comes from Settings.</li>
+    range comes from Settings.  Up to 1000&nbsp;bp can be asked for; enough
+    genomic sequence is fetched around the variant automatically.  Above
+    300&nbsp;bp a note reminds you that CTCE separates best on fragments up to
+    about 250&nbsp;bp (long fragments usually have several melting domains),
+    and long designs take longer to compute.</li>
 <li><b>Sort</b> by clicking column headers (Score, Fragment length, Δarea, Variant/chr, …).
     Numeric columns sort by value, not by text.</li>
 <li><b>Multi-select</b>: Ctrl+click to toggle rows, Shift+click for a range,
@@ -145,7 +149,8 @@ sample: WT&nbsp;+&nbsp;common and MUT&nbsp;+&nbsp;common.
     capillary sees them, genomic amplicon <i>plus</i> the labelling tail
     when it is ON.  It applies to both the WT and the MUT product, which differ
     in length for deletions and insertions.  The default range comes from
-    Settings.</li>
+    Settings; long products (e.g. 500&nbsp;bp) work, and enough sequence
+    is fetched around the variant automatically.</li>
 <li><b>Labelling tail</b> (ON/OFF button): when ON, the common primer gets a
     5&prime; tail.  Add a fluorescent primer with the tail's sequence to the
     PCR: once the tail has been copied into the product it primes there and
