@@ -86,23 +86,30 @@ def _index_of(chrom_seq: str, seed: str) -> List[int]:
 
 
 def _match_at(chrom_seq: str, pos: int, query: str, mismatches: int,
-              three_prime_left: bool = False) -> bool:
-    """Whether *query* anneals at *pos* with <= *mismatches*, 3' base exact.
+              three_prime_left: bool = False, exact_3p: int = 1) -> bool:
+    """Whether *query* anneals at *pos* with <= *mismatches*.
 
-    *query* is the plus-strand text being matched.  For a forward primer it is
-    the primer itself and its 3' end is the rightmost base.  For a reverse
-    primer it is the primer's reverse complement, so the primer's 3' end is
-    the *leftmost* base of *query* -- pass ``three_prime_left=True``.
+    The *exact_3p* bases at the primer's 3' end must match exactly (1 = the
+    terminal base only; MAMA uses 2 so a deliberate penultimate mismatch
+    blocks priming).  *query* is the plus-strand text being matched.  For a
+    forward primer it is the primer itself and its 3' end is the rightmost
+    base.  For a reverse primer it is the primer's reverse complement, so the
+    primer's 3' end is the *leftmost* base of *query* -- pass
+    ``three_prime_left=True``.
     """
-    end = pos + len(query)
+    n = len(query)
+    end = pos + n
     if pos < 0 or end > len(chrom_seq):
         return False
-    anchor = 0 if three_prime_left else len(query) - 1
-    if chrom_seq[pos + anchor] != query[anchor]:
-        return False
+    k = max(1, min(int(exact_3p), n))
+    exact = range(0, k) if three_prime_left else range(n - k, n)
+    for i in exact:
+        if chrom_seq[pos + i] != query[i]:
+            return False
+    lo, hi = (k, n) if three_prime_left else (0, n - k)
     bad = 0
-    for i in range(len(query)):
-        if i != anchor and chrom_seq[pos + i] != query[i]:
+    for i in range(lo, hi):
+        if chrom_seq[pos + i] != query[i]:
             bad += 1
             if bad > mismatches:
                 return False
@@ -110,7 +117,7 @@ def _match_at(chrom_seq: str, pos: int, query: str, mismatches: int,
 
 
 def _unique_sites(chrom_seq: str, primer: str, mismatches: int,
-                  reverse: bool = False) -> List[int]:
+                  reverse: bool = False, exact_3p: int = 1) -> List[int]:
     """All 0-based start positions where *primer* matches, in ascending order.
 
     With *reverse*, the reverse complement is searched (the minus-strand
@@ -126,7 +133,7 @@ def _unique_sites(chrom_seq: str, primer: str, mismatches: int,
             if start in found:
                 continue
             if _match_at(seq, start, query, mismatches,
-                         three_prime_left=reverse):
+                         three_prime_left=reverse, exact_3p=exact_3p):
                 found.add(start)
     return sorted(found)
 
@@ -191,29 +198,55 @@ def _iter_chunks(assembly: str, chrom: str, min_size: int, max_size: int,
     yield from chunks
 
 
+def _exact_pair(exact_3p) -> Tuple[int, int]:
+    """``exact_3p`` as (forward, reverse); an int applies to both primers."""
+    if isinstance(exact_3p, (tuple, list)):
+        return int(exact_3p[0]), int(exact_3p[1])
+    return int(exact_3p), int(exact_3p)
+
+
+def _products_in(seq: str, fp: str, rp: str, min_size: int, max_size: int,
+                 mismatches: int, exact_3p) -> List[Tuple[int, int]]:
+    fx, rx = _exact_pair(exact_3p)
+    fp_sites = _unique_sites(seq, fp, mismatches, exact_3p=fx)
+    rc_sites = _unique_sites(seq, rp, mismatches, reverse=True, exact_3p=rx)
+    return _count_products(fp_sites, rc_sites, len(fp), len(rp),
+                           min_size, max_size)
+
+
 def amplicons(assembly: str, chrom: str, fp: str, rp: str,
               min_size: int, max_size: int,
               mismatches: int = DEFAULT_MISMATCHES,
               local_2bit: Optional[str] = None,
-              region: Optional[Tuple[int, int]] = None) -> List[Tuple[int, int]]:
+              region: Optional[Tuple[int, int]] = None,
+              exact_3p=1) -> List[Tuple[int, int]]:
     """All amplicons (start, end) the primer pair produces on *chrom*.
 
     In REST mode *region* (genome coordinates) bounds the scan; ``None``
     scans the whole chromosome (provide a local 2bit for speed).
+    *exact_3p* is the number of 3' bases that must match exactly, as an int
+    for both primers or a ``(forward, reverse)`` pair.
     """
     out: List[Tuple[int, int]] = []
-    fp_len, rp_len = len(fp), len(rp)
     for offset, seq in _iter_chunks(assembly, chrom, min_size, max_size,
                                     local_2bit, region):
-        fp_sites = _unique_sites(seq, fp, mismatches)
-        rc_sites = _unique_sites(seq, rp, mismatches, reverse=True)
-        for s, e in _count_products(fp_sites, rc_sites, fp_len, rp_len,
-                                    min_size, max_size):
+        for s, e in _products_in(seq, fp, rp, min_size, max_size,
+                                 mismatches, exact_3p):
             p = (offset + s, offset + e)
             if p not in out:
                 out.append(p)
     out.sort()
     return out
+
+
+def amplicons_in_sequence(seq: str, fp: str, rp: str,
+                          min_size: int, max_size: int,
+                          mismatches: int = DEFAULT_MISMATCHES,
+                          exact_3p=1) -> List[Tuple[int, int]]:
+    """Like :func:`amplicons`, on a supplied sequence instead of a genome
+    (pasted templates, tests).  Coordinates are 0-based in *seq*."""
+    return sorted(set(_products_in(seq, fp, rp, min_size, max_size,
+                                   mismatches, exact_3p)))
 
 
 def check(assembly: str, chrom: str, fp: str, rp: str,

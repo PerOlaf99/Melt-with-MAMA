@@ -43,6 +43,15 @@ _INDEL_OVERLAP = (3, 4, 5)
 _MIN_3P_DIFFS = 3
 _MUT_FLANK = 200
 
+# In-silico PCR for MAMA runs on the reference (wildtype) sequence.
+# Allele-specific primers need their last two 3' bases to match, so the
+# deliberate penultimate mismatch blocks priming; the common primer uses
+# the usual terminal-base rule.
+MAMA_EXACT_3P_AS = 2
+MAMA_EXACT_3P_COMMON = 1
+MAMA_INPCR_MIN = 40       # bp; product sizes scanned for off-target bands
+MAMA_INPCR_MAX = 1000
+
 
 @dataclass
 class MamaInfo:
@@ -62,6 +71,10 @@ class MamaInfo:
     delta_tm: float = 0.0
     amplicon_tm_wt: float = 0.0
     amplicon_tm_mut: float = 0.0
+    inpcr_wt: int = -1            # products on the reference; -1 = not run
+    inpcr_mut: int = -1
+    inpcr_ok: Optional[bool] = None
+    inpcr_note: str = ""
 
 
 @dataclass
@@ -143,7 +156,8 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
                  extra_mm_positions=(2,),
                  min_product: int = 60,
                  max_product: int = 220,
-                 max_frag: int = pr.MAX_FRAG_LENGTH) -> DesignResult:
+                 max_frag: int = pr.MAX_FRAG_LENGTH,
+                 do_inpcr: bool = True) -> DesignResult:
     """Ranked MAMA assays for a SNP, deletion or insertion.
 
     The common primer always carries *gc_tail* on its 5' end (labelling-primer
@@ -208,6 +222,11 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
 
     assays.sort(key=lambda c: (-c.score, -c.delta_tm, c.product_len_wt))
     top = assays[:12]
+    if do_inpcr and top:
+        for assay in top:
+            check_specificity(assay, refseq, start, a, chrom_n, local_2bit,
+                              in_sequence=refseq_override is not None)
+        top.sort(key=lambda c: (-c.score, -c.delta_tm, c.product_len_wt))
     cands = [a.as_design_candidate() for a in top]
     note = ""
     if not cands:
@@ -282,7 +301,8 @@ def analyze_mama(rsid: Optional[str] = None, chrom: str = "ref",
         "ref_prof": ref_prof, "alt_prof": alt_prof,
         "rows": rows, "pairs": [],
         "ref_mean_tm": wt_mean, "alt_mean_tm": mut_mean,
-        "pair_count": 2, "inpcr_notes": [],
+        "pair_count": 2,
+        "inpcr_notes": [info.inpcr_note] if info.inpcr_note else [],
         "base": base, "assembly": result.assembly,
         "window_start": result.window_start, "window_end": result.window_end,
         "idx": mut_idx, "indel": len(assay.wt_amp) - len(assay.mut_amp),
@@ -676,3 +696,92 @@ def _score(assay: MamaCandidate, opt_tm, min_tm, max_tm, max_product) -> int:
 
 def _rounded(tm) -> float:
     return tm if tm is None or math.isnan(tm) else round(float(tm), 2)
+
+
+def expected_products(kind: str) -> tuple:
+    """(WT set, MUT set) products expected on the reference genome.
+
+    Deletions/insertions: the WT primer matches the reference, so exactly
+    the target; the MUT primer spans the junction, so nothing.  Point
+    mutations: the WT primer carries the deliberate penultimate mismatch and
+    the MUT primer the alternative 3' base, so neither primes.
+    """
+    return (0, 0) if "snp" in kind else (1, 0)
+
+
+def _inpcr_pairs(assay: "MamaCandidate"):
+    """(fp, rp, exact_3p) for the WT and MUT sets, genomic parts only (the
+    5' GC tail does not bind the template)."""
+    info = assay.info
+    if assay.orientation == "forward":
+        rp = pr._revcomp(info.common_genome)
+        ex = (MAMA_EXACT_3P_AS, MAMA_EXACT_3P_COMMON)
+        return [(info.wt_as, rp, ex), (info.mut_as, rp, ex)]
+    ex = (MAMA_EXACT_3P_COMMON, MAMA_EXACT_3P_AS)
+    return [(info.common_genome, info.wt_as, ex),
+            (info.common_genome, info.mut_as, ex)]
+
+
+def check_specificity(assay: "MamaCandidate", refseq: str, window_start: int,
+                      assembly: str, chrom: str,
+                      local_2bit: Optional[str] = None,
+                      in_sequence: bool = False,
+                      mismatches: Optional[int] = None) -> bool:
+    """Run the in-silico PCR for both primer sets against the reference and
+    compare with :func:`expected_products`.
+
+    Results go into ``assay.info`` (``inpcr_wt``, ``inpcr_mut``,
+    ``inpcr_ok``, ``inpcr_note``); an assay that does not behave as expected
+    loses 40 score points.  With *in_sequence* (pasted template) only the
+    supplied sequence is scanned; otherwise the genome window around the
+    variant (whole genome with a local 2bit).  Returns ``inpcr_ok``.
+    """
+    from . import inpcr
+    mm = inpcr.DEFAULT_MISMATCHES if mismatches is None else mismatches
+    info = assay.info
+    want = expected_products(assay.kind)
+    target = (assay.ps, assay.pe + 1)            # in refseq coordinates
+    counts, on_target = [], False
+    try:
+        for i, (fp, rp, ex) in enumerate(_inpcr_pairs(assay)):
+            if in_sequence:
+                prods = inpcr.amplicons_in_sequence(
+                    refseq, fp, rp, MAMA_INPCR_MIN, MAMA_INPCR_MAX,
+                    mismatches=mm, exact_3p=ex)
+                tgt = target
+            else:
+                tgt = (window_start + target[0], window_start + target[1])
+                region = None if local_2bit else (
+                    tgt[0] - inpcr.DEFAULT_FLANK, tgt[1] + inpcr.DEFAULT_FLANK)
+                prods = inpcr.amplicons(
+                    assembly, chrom, fp, rp, MAMA_INPCR_MIN, MAMA_INPCR_MAX,
+                    mismatches=mm, local_2bit=local_2bit, region=region,
+                    exact_3p=ex)
+            counts.append(len(prods))
+            if i == 0 and any(s0 <= tgt[0] and tgt[1] <= e0
+                              for s0, e0 in prods):
+                on_target = True
+    except Exception as exc:                                  # noqa: BLE001
+        info.inpcr_ok = None
+        info.inpcr_note = f"in-silico PCR not run: {exc}"
+        return None
+
+    info.inpcr_wt, info.inpcr_mut = counts
+    ok = (tuple(counts) == want) and (want[0] == 0 or on_target)
+    info.inpcr_ok = ok
+    exp = f"expected WT {want[0]} / MUT {want[1]}"
+    got = f"WT {counts[0]} / MUT {counts[1]}"
+    if ok:
+        info.inpcr_note = f"in-silico PCR on reference: {got} as expected"
+    else:
+        why = []
+        if counts[0] > want[0] or counts[1] > want[1]:
+            why.append("unexpected product(s)")
+        if want[0] and not on_target:
+            why.append("WT set misses the designed target")
+        info.inpcr_note = (f"in-silico PCR on reference: {got} ({exp}) — "
+                           + ", ".join(why or ["check design"]))
+        assay.score = max(0, assay.score - 40)
+        if "⚠" not in assay.name:
+            assay.name += " ⚠ inPCR"
+    return ok

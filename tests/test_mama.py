@@ -270,3 +270,77 @@ if __name__ == "__main__":
     test_mama_cg_repeat_delins()
     test_odd_window_does_not_claim_boundary()
     print("ALL MAMA TESTS PASSED")
+
+
+# --- in-silico PCR expectations on the reference (wildtype) sequence -------
+
+def _seq_case(ref, alt, seed=4):
+    import random
+    rng = random.Random(seed)
+    bg = lambda n: "".join(rng.choice("ACGT") for _ in range(n))
+    left, right = bg(250), bg(250)
+    return left + ref + right
+
+
+def test_inpcr_snp_neither_set_amplifies_reference():
+    seq = _seq_case("G", "A")
+    res = mama.design_mama(chrom="ref", pos=250, ref="G", alt="A",
+                           refseq_override=seq, genome="")
+    assert res.candidates
+    for c in res.candidates:                       # both orientations
+        info = c.mama.info
+        assert (info.inpcr_wt, info.inpcr_mut) == (0, 0), info.inpcr_note
+        assert info.inpcr_ok is True
+
+
+def test_inpcr_deletion_wt_on_target_mut_none():
+    seq = _seq_case("ACTTGCAGTCC", "A")
+    res = mama.design_mama(chrom="ref", pos=250, ref="ACTTGCAGTCC", alt="A",
+                           refseq_override=seq, genome="")
+    assert res.candidates
+    for c in res.candidates:
+        info = c.mama.info
+        assert (info.inpcr_wt, info.inpcr_mut) == (1, 0), info.inpcr_note
+        assert info.inpcr_ok is True
+
+
+def test_inpcr_flags_off_target_copy():
+    # A second copy of the WT amplicon elsewhere must be caught.
+    seq = _seq_case("ACTTGCAGTCC", "A")
+    res = mama.design_mama(chrom="ref", pos=250, ref="ACTTGCAGTCC", alt="A",
+                           refseq_override=seq, genome="", do_inpcr=False)
+    assay = res.candidates[0].mama
+    region = seq[assay.ps:assay.pe + 1]
+    dup = seq + "T" * 50 + region
+    score = assay.score
+    ok = mama.check_specificity(assay, dup, 0, "", "ref", in_sequence=True)
+    assert ok is False and assay.info.inpcr_wt >= 2   # copies + cross-product
+    assert assay.score < score and "⚠" in assay.name
+
+
+def test_inpcr_flags_snp_wt_primer_without_extra_mismatch():
+    # Without the deliberate -2 mismatch the WT primer matches the reference
+    # and amplifies: that must be reported, not passed.
+    seq = _seq_case("G", "A")
+    res = mama.design_mama(chrom="ref", pos=250, ref="G", alt="A",
+                           refseq_override=seq, genome="", do_inpcr=False)
+    assay = res.candidates[0].mama
+    if assay.orientation == "forward":
+        start = assay.ps
+        assay.info.wt_as = seq[start:start + len(assay.info.wt_as)]
+    else:
+        from varmelt import primers as pr
+        end = assay.pe + 1
+        assay.info.wt_as = pr._revcomp(seq[end - len(assay.info.wt_as):end])
+    assert mama.check_specificity(assay, seq, 0, "", "ref",
+                                  in_sequence=True) is False
+    assert assay.info.inpcr_wt == 1
+
+
+def test_inpcr_exact_3p_two_blocks_penultimate_mismatch():
+    from varmelt import inpcr
+    tmpl = "ACGTTGCATGCA"
+    assert inpcr._match_at(tmpl, 0, tmpl[:-2] + "T" + tmpl[-1], 2,
+                           exact_3p=1)
+    assert not inpcr._match_at(tmpl, 0, tmpl[:-2] + "T" + tmpl[-1], 2,
+                               exact_3p=2)
