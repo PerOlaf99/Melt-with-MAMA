@@ -221,6 +221,43 @@ def test_odd_window_does_not_claim_boundary():
     assert refseq[got_idx:got_idx + len(ref)] == ref
 
 
+def _anchored_deletion_case():
+    import random
+    rng = random.Random(4)
+    bg = lambda n: "".join(rng.choice("ACGT") for _ in range(n))
+    left, right = bg(250), bg(250)
+    anchor, deleted = "A", "CTTGCAGTCC"
+    seq = left + anchor + deleted + right
+    res = mama.design_mama(chrom="ref", pos=250, ref=anchor + deleted,
+                           alt=anchor, refseq_override=seq, genome="")
+    return res, left, anchor, deleted, right
+
+
+def test_anchored_deletion_wt_3prime_is_3_to_5_bp_into_deletion():
+    # VCF-style deletion: the anchor base is NOT deleted, so the WT primer
+    # 3' end must cover 3-5 of the *deleted* bases (was 2-4).
+    res, left, anchor, deleted, right = _anchored_deletion_case()
+    from varmelt import primers as pr
+    for c in res.candidates:
+        a = c.mama
+        wt = a.info.wt_as if a.orientation == "forward" \
+            else pr._revcomp(a.info.wt_as)
+        mut = a.info.mut_as if a.orientation == "forward" \
+            else pr._revcomp(a.info.mut_as)
+        if a.orientation == "forward":
+            into = max(n for n in range(11)
+                       if wt.endswith(anchor + deleted[:n]))
+            beyond = max(n for n in range(6)
+                         if mut.endswith(anchor + right[:n]))
+        else:                       # plus-strand text; 3' end is on the left
+            into = max(n for n in range(11)
+                       if wt.startswith(deleted[-n:] + right[:5]))
+            beyond = max(n for n in range(6)
+                         if mut.startswith((left + anchor)[-n:] + right[:5]))
+        assert 3 <= into <= 5, (a.orientation, into, wt)
+        assert 3 <= beyond <= 5, (a.orientation, beyond, mut)
+
+
 if __name__ == "__main__":
     test_parse_deletion_spec()
     test_extra_mismatch_is_penultimate_or_minus3()

@@ -430,14 +430,15 @@ def _build_indel_as(kind, ori, into, beyond, plen, refseq, altseq,
 def _indel_forward(into, beyond, plen, refseq, altseq, idx, ref, alt):
     """Shared 5' in the left flank; 3' ends sit in/beyond the variant."""
     ref_len, alt_len = len(ref), len(alt)
-    into = min(into, max(ref_len, 1))
+    anc = _anchor_len(ref, alt)
+    into = min(into, max(abs(ref_len - alt_len), 1))
     beyond = max(beyond, 1)
     if ref_len >= alt_len:
-        wt_3p = idx + into - 1
+        wt_3p = idx + anc + into - 1          # *into* deleted bases
         mut_3p = idx + alt_len + beyond - 1
     else:
         wt_3p = idx + ref_len + beyond - 1
-        mut_3p = idx + into - 1
+        mut_3p = idx + anc + into - 1         # *into* inserted bases
     start = wt_3p - plen + 1
     if start < 0 or start >= idx:
         return None
@@ -457,13 +458,14 @@ def _indel_forward(into, beyond, plen, refseq, altseq, idx, ref, alt):
 def _indel_reverse(into, beyond, plen, refseq, altseq, idx, ref, alt):
     """Shared 5' in the right flank (reverse primers); 3' in/beyond variant."""
     ref_len, alt_len = len(ref), len(alt)
-    into = min(into, max(ref_len, 1) if ref_len >= alt_len else max(alt_len, 1))
+    anc = _anchor_len(ref, alt)
+    into = min(into, max(abs(ref_len - alt_len), 1))
     beyond = max(beyond, 1)
     if ref_len >= alt_len:
         wt_left = idx + ref_len - into
-        mut_left = idx - beyond
+        mut_left = idx + anc - beyond         # *beyond* bases left of junction
     else:
-        wt_left = idx - beyond
+        wt_left = idx + anc - beyond
         mut_left = idx + alt_len - into
     if wt_left < 0 or mut_left < 0:
         return None
@@ -482,6 +484,20 @@ def _indel_reverse(into, beyond, plen, refseq, altseq, idx, ref, alt):
     if _terminal_diffs(wt, mut) < _MIN_3P_DIFFS:
         return None
     return wt, mut, wt_left, mut_left
+
+
+def _anchor_len(ref: str, alt: str) -> int:
+    """Leading bases shared by REF and ALT (the VCF anchor, usually 1).
+
+    In ``ACATTG>A`` the first ``A`` is not deleted, so "3 bp into the
+    deletion" must be counted from the base after it.
+    """
+    n = 0
+    for x, y in zip(ref, alt):
+        if x != y:
+            break
+        n += 1
+    return n
 
 
 def _terminal_diffs(a: str, b: str, n: int = 8) -> int:
