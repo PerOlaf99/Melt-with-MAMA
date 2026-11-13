@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# app output (generated reports / profiles)
+webout/
+
+# saved projects and tiling report exports (user data)
+*.varmelt.json
+tiling*.csv
+
+# editor / OS
+.DS_Store
+*.swp

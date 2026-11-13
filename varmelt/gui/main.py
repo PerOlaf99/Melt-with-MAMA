@@ -1,0 +1,1495 @@
+"""Main window of the standalone MeltScope GUI (WinMelt-style workbench)."""
+import os
+import sys
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QGuiApplication
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
+                               QDoubleSpinBox, QFileDialog, QHeaderView,
+                               QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QListWidget, QListWidgetItem,
+                               QMainWindow, QMenu, QMessageBox,
+                               QProgressDialog, QPushButton, QSizePolicy,
+                               QSplitter, QTableWidget, QVBoxLayout, QWidget)
+
+from .. import cli, webapp
+from .design import SortableItem
+from .dialogs import AddPairDialog, AddSequenceDialog, EditItemDialog
+from .model import APP_VERSION, CLAMP_SIDES, Item, Project
+from .plot import MeltChart, PALETTE, set_chart_theme
+from . import help_docs
+
+# ------------------------------------------------------------------ theme - #
+# Modern 2026 "LIF green" skin for fluorescence detection (Laser-Induced
+# Fluorescence): crisp white/cream with fluorescent laser-green accents,
+# dark-green text.  Bright and readable, with that lab feel.
+# Applied as a QSS stylesheet in build_app() so the window and dialogs share it.
+LIF_QSS = """
+* { font-family: "Segoe UI", "Noto Sans", "DejaVu Sans", sans-serif; }
+QMainWindow, QDialog { background-color: #eef7e4; }
+QWidget { background-color: #eef7e4; color: #1c3810;
+          selection-background-color: #b0dd82; selection-color: #12280a; }
+QToolTip { background-color: #f8fff0; color: #1c3810;
+           border: 1px solid #6fbf3a; padding: 4px 8px; }
+QMenuBar { background-color: #a3da5f; color: #12280a;
+           border-bottom: 1px solid #7bb854; }
+QMenuBar::item:selected { background-color: #7fd24a; border-radius: 4px;
+                          color: #12280a; }
+QMenu { background-color: #f8fff0; color: #1c3810;
+        border: 1px solid #8cc85c; border-radius: 6px; padding: 4px; }
+QMenu::item { padding: 5px 24px 5px 18px; border-radius: 4px; }
+QMenu::item:selected { background-color: #7fd24a; color: #12280a; }
+QMenu::separator { height: 1px; background: #bde29a; margin: 4px 10px; }
+QPushButton { background-color: #9ce055; color: #12280a;
+              border: 1px solid #6db43a; border-radius: 7px; padding: 5px 12px; }
+QPushButton:hover { background-color: #b5e877; }
+QPushButton:pressed { background-color: #7ec23c; }
+QPushButton:default { background-color: #4fc92a; border: 1px solid #3aa81d;
+                      color: #12280a; font-weight: 600; }
+QPushButton:disabled { background-color: #e4f0d8; color: #8aa168; }
+QFrame#card, QGroupBox { background-color: #f7fdf0;
+                         border: 1px solid #b8dd89; border-radius: 9px; }
+QGroupBox { margin-top: 10px; padding-top: 8px; }
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px;
+                   color: #44691f; }
+QLabel { background-color: transparent; color: #1c3810; }
+QLabel#muted { color: #65803d; }
+QListWidget, QTableWidget, QTableView, QPlainTextEdit, QTextEdit,
+QTextBrowser, QSpinBox, QDoubleSpinBox, QComboBox {
+    background-color: #ffffff; color: #1c3810; border: 1px solid #9ad066;
+    border-radius: 7px; selection-background-color: #cdedad;
+    alternate-background-color: #eff9e5; }
+QTableWidget::item:selected, QListWidget::item:selected,
+QTableView::item:selected { background-color: #cdedad; color: #12280a; }
+QHeaderView::section { background-color: #d5eba8; color: #35600e;
+                       border: none; border-bottom: 1px solid #9ad066;
+                       padding: 6px; font-weight: 600; }
+QHeaderView::section:hover { background-color: #9ce055; color: #12280a; }
+QSpinBox, QDoubleSpinBox, QComboBox { padding: 2px 6px; }
+QComboBox QAbstractItemView { background-color: #f8fff0; color: #1c3810;
+                              selection-background-color: #7fd24a;
+                              selection-color: #12280a; }
+QScrollBar:vertical { background: #e4f5d0; width: 12px; margin: 0; }
+QScrollBar::handle:vertical { background: #8acc50; border-radius: 6px;
+                              min-height: 30px; }
+QScrollBar::handle:vertical:hover { background: #67c735; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar:horizontal { background: #e4f5d0; height: 12px; margin: 0; }
+QScrollBar::handle:horizontal { background: #8acc50; border-radius: 6px;
+                                min-width: 30px; }
+QScrollBar::handle:horizontal:hover { background: #67c735; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QCheckBox, QRadioButton { background: transparent; color: #1c3810; }
+QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; }
+QProgressBar { background-color: #ffffff; border: 1px solid #9ad066;
+               border-radius: 5px; text-align: center; color: #1c3810; }
+QProgressBar::chunk { background-color: #4fc92a; border-radius: 4px; }
+"""
+
+
+def apply_dark_theme(app):
+    """Fluorescent LIF-green skin (Laser-Induced Fluorescence) for MeltScope."""
+    app.setStyleSheet(LIF_QSS)
+    set_chart_theme("light")
+
+_SUPPORTED = [("varmelt project (*.varmelt.json)", "*.varmelt.json"),
+              ("JSON files (*.json)", "*.json")]
+_CSV_HEAD = ["#", "name", "kind", "forward primer", "reverse primer",
+             "fwd tm", "rev tm", "product start", "product end",
+             "length", "mean tm", "delta area", "gc clamp", "melting shape"]
+
+
+def _file_filters() -> str:
+    return ";;".join(f"{name} ({pattern})"
+                     for name, pattern in _SUPPORTED)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.project = Project()
+        self.path = None
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(400)
+        self._debounce.timeout.connect(self._recompute_current)
+        self.setWindowTitle(
+            f"MeltScope v{APP_VERSION} — CTCE variant melting design")
+        self.resize(1150, 720)
+        self._build_ui()
+        self._build_menus()
+        self.statusBar().showMessage("add a sequence, or open a project")
+
+    # ---------------------------------------------------------------- UI - #
+    def _build_ui(self):
+        splitter = QSplitter()
+
+        # left: item list
+        left = QWidget()
+        lay = QVBoxLayout(left)
+        lay.setContentsMargins(0, 0, 0, 0)
+        L = QLabel("<b>Amplicons</b> (0)")
+        L.setObjectName("listTitle")
+        L.setToolTip("Number of amplicons in the project")
+        lay.addWidget(L)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("filter amplicons by name…")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.setToolTip(
+            "Type to show only amplicons whose name matches. The row number "
+            "is the same shared # as the primer table.")
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        lay.addWidget(self.filter_edit)
+        self.list = QListWidget()
+        self.list.itemSelectionChanged.connect(self._on_select)
+        self.list.itemDoubleClicked.connect(lambda _: self._rename_item())
+        self.list.itemChanged.connect(self._on_item_changed)
+        self.list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list.setToolTip(
+            "Amplicons in this project. Select one to edit details;\n"
+            "use the checkbox (if shown) or selection to drive the overlay chart.")
+        lay.addWidget(self.list)
+
+        tip = QLabel("<small>tick a row to plot it — several charts are "
+                     "shown at once</small>")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        # two clean button rows instead of one crowded line: add-actions on
+        # top, item actions below (disabled until a row is selected)
+        row_add = QHBoxLayout()
+        row_act = QHBoxLayout()
+        b_add = QPushButton("+ sequence")
+        b_add.setToolTip("Add a DNA sequence to analyse")
+        b_add.clicked.connect(self._add_sequence)
+        b_plus = QPushButton("+ wt/mut")
+        b_plus.setToolTip("Add a wildtype/mutant pair")
+        b_plus.clicked.connect(self._add_pair)
+        b_edit = QPushButton("Edit…")
+        b_edit.setToolTip("Edit the selected amplicon (e.g. change a base)")
+        b_edit.clicked.connect(self._edit_item)
+        b_dup = QPushButton("Duplicate")
+        b_dup.setToolTip("Copy the selected amplicon")
+        b_dup.clicked.connect(self._duplicate_item)
+        b_del = QPushButton("Delete")
+        b_del.setToolTip("Remove the selected amplicon")
+        b_del.clicked.connect(self._remove_item)
+        b_clear = QPushButton("Clear")
+        b_clear.setToolTip("Remove every amplicon from the project at once")
+        b_clear.clicked.connect(self._clear_items)
+        b_sort = QPushButton("Sort by Ticked")
+        b_sort.setToolTip("Sort amplicons so ticked items appear first")
+        b_sort.clicked.connect(self._sort_by_ticked)
+        b_save_ticked = QPushButton("Save Ticked")
+        b_save_ticked.setToolTip("Save ticked amplicons to a JSON file")
+        b_save_ticked.clicked.connect(self._save_ticked)
+        b_save_sub = QPushButton("Save as Sub-project")
+        b_save_sub.setToolTip("Save selected amplicons as a new sub-project JSON file")
+        b_save_sub.clicked.connect(self._save_selected_as_subproject)
+        for b in (b_add, b_plus, b_edit, b_dup, b_del, b_clear, b_sort, b_save_ticked, b_save_sub):
+            b.setMinimumHeight(30)
+            b.setFocusPolicy(Qt.NoFocus)
+        for b in (b_add, b_plus, b_edit, b_dup, b_del, b_clear, b_sort, b_save_ticked, b_save_sub):
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row_add.addWidget(b_add)
+        row_add.addWidget(b_plus)
+        row_act.addWidget(b_edit)
+        row_act.addWidget(b_dup)
+        row_act.addWidget(b_del)
+        row_act.addWidget(b_clear)
+        lay.addLayout(row_add)
+        lay.addLayout(row_act)
+        self._edit_button = b_edit
+        self._dup_button = b_dup
+        self._del_button = b_del
+        self._clear_button = b_clear
+        self._update_action_buttons()
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._context_menu)
+        left.setMinimumWidth(280)
+        left.setMaximumWidth(340)
+        splitter.addWidget(left)
+
+        # right: chart + settings + table
+        right = QWidget()
+        rlay = QVBoxLayout(right)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Na+ (mol/L):"))
+        self.na_spin = QDoubleSpinBox()
+        self.na_spin.setToolTip(
+            "Monovalent salt (Na+) concentration in mol/L used by the "
+            "two-state melting model. 0.05 = 50 mM. Higher salt stabilises "
+            "the duplex and shifts Tm up; the melt map recomputes live.")
+        self.na_spin.setRange(0.001, 1.0)
+        self.na_spin.setDecimals(3)
+        self.na_spin.setSingleStep(0.001)
+        from .app_settings import current as load_settings
+        self.na_spin.setValue(load_settings()["na"])
+        self.na_spin.valueChanged.connect(self._na_changed)
+        top.addWidget(self.na_spin)
+
+        top.addSpacing(18)
+        top.addWidget(QLabel("GC clamp (selected):"))
+        self.clamp_combo = QComboBox()
+        self.clamp_combo.setToolTip(
+            "Optional GC-clamp oligo (42 nt) appended to one primer to make "
+            "the melting slope steep and easy to call in CTCE/HRM. Choose "
+            "'none' to see the raw amplicon melt map.")
+        for s in CLAMP_SIDES:
+            self.clamp_combo.addItem(
+                "5' (left)" if s == "5'" else "3' (right)" if s == "3'"
+                else "none", s)
+        self.clamp_combo.currentIndexChanged.connect(self._clamp_changed)
+        top.addWidget(self.clamp_combo)
+        top.addStretch(1)
+        rlay.addLayout(top)
+
+        self.info = QLabel("no item selected")
+        self.info.setWordWrap(True)
+        rlay.addWidget(self.info)
+
+        # single overlay plot with zoom controls
+        self.chart = MeltChart()
+        self.chart.setToolTip(
+            "Melt map overlay: solid = reference, dashed = variant.\n"
+            "Wheel = zoom · Shift/middle-drag = pan · box-drag = zoom · "
+            "double-click = reset.")
+        tools = QHBoxLayout()
+        tools.addWidget(QLabel("<b>Melt maps</b> (overlaid)"))
+        tools.addStretch(1)
+        b_minus = QPushButton("−")
+        b_minus.setToolTip("zoom out (also mouse wheel)")
+        b_minus.setFixedWidth(34)
+        b_minus.clicked.connect(self.chart.zoom_out)
+        b_plus = QPushButton("+")
+        b_plus.setToolTip("zoom in (also mouse wheel)")
+        b_plus.setFixedWidth(34)
+        b_plus.clicked.connect(self.chart.zoom_in)
+        b_reset = QPushButton("Reset")
+        b_reset.setToolTip("show all melt maps again")
+        b_reset.clicked.connect(self.chart.reset)
+        tools.addWidget(b_minus)
+        tools.addWidget(b_plus)
+        tools.addWidget(b_reset)
+        rlay.addLayout(tools)
+        rlay.addWidget(self.chart, stretch=1)
+
+        # primer-set report table (editable; copy / save it below)
+        header = QHBoxLayout()
+        header.addWidget(QLabel("<b>Primer set</b> (first/last 20 bases)"))
+        header.addStretch(1)
+        b_copy = QPushButton("Copy")
+        b_copy.setToolTip("Copy every row as tab-separated text")
+        b_copy.clicked.connect(self._copy_table)
+        header.addWidget(b_copy)
+        b_csv = QPushButton("Save CSV…")
+        b_csv.setToolTip("Export the primer set as a CSV file")
+        b_csv.clicked.connect(self._export_csv)
+        header.addWidget(b_csv)
+        rlay.addLayout(header)
+
+        self.table = QTableWidget(0, 13)
+        self.table.setHorizontalHeaderLabels(
+            ["#", "Amplicon", "Forward primer", "Reverse primer", "Fwd Tm",
+             "Rev Tm", "Product start", "Product end", "Length (bp)",
+             "Mean Tm", "Δarea (°C·bp)", "GC clamp", "Melting shape"])
+        self.table.setToolTip(
+            "First/last 20 bases of each predicted primer. Edit manually, "
+            "then Copy or Save CSV for your oligo order. The # column "
+            "matches the numbered amplicon list; double-click a row to jump "
+            "to its amplicon.")
+        _HDR_TIPS = {
+            "#": "Row number, matching the numbered amplicon list on the "
+                 "left (double-click a row to jump to its amplicon).",
+            "Fwd Tm": "Predicted melting temperature (°C) of the forward "
+                       "primer (WinMelt model, no GC clamp).",
+            "Rev Tm": "Predicted melting temperature (°C) of the reverse "
+                       "primer (WinMelt model, no GC clamp).",
+            "Mean Tm": "Average local melting temperature (°C) over the "
+                       "fragment; useful for quick Tm comparison.",
+            "Δarea (°C·bp)": "Area between the reference and variant melt "
+                             "curves. Larger = easier to distinguish the "
+                             "alleles in CTCE/HRM.",
+            "GC clamp": "Which end the optional 42-nt GC clamp oligo is "
+                        "attached to ('5''/'3'' or none).",
+            "Melting shape": "Qualitative shape of the melt map after the "
+                             "clamp (e.g. clean slope), as used for "
+                             "CTCE-oriented design scoring.",
+        }
+        for i in range(self.table.columnCount()):
+            col = self.table.horizontalHeaderItem(i)
+            if col and col.text() in _HDR_TIPS:
+                col.setToolTip(_HDR_TIPS[col.text()])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setMinimumHeight(140)
+        self.table.setMaximumHeight(260)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked
+                                   | QAbstractItemView.EditKeyPressed)
+        head = self.table.horizontalHeader()
+        head.setSectionResizeMode(QHeaderView.Interactive)
+        for c in (2, 3):
+            head.setSectionResizeMode(c, QHeaderView.Stretch)
+        head.setMinimumSectionSize(70)
+        head.setSortIndicatorShown(True)
+        self._table_sort = None
+        head.sortIndicatorChanged.connect(
+            lambda sec, order: setattr(self, "_table_sort", (sec, order)))
+        self.table.setSortingEnabled(True)
+        self.table.itemDoubleClicked.connect(self._on_table_row_activated)
+        rlay.addWidget(self.table)
+
+        splitter.addWidget(right)
+        splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(splitter)
+
+    def _build_menus(self):
+        m_file = self.menuBar().addMenu("&File")
+        self._add_action(m_file, "&New", self._new_project, "Ctrl+N",
+                         "Start a fresh project (clears the amplicon list)")
+        self._add_action(m_file, "&Open…", self._open_project, "Ctrl+O",
+                         "Open a saved MeltScope project (*.varmelt.json)")
+        self._add_action(m_file, "&Save", self._save_project, "Ctrl+S",
+                         "Save this project")
+        self._add_action(m_file, "Save &As…", self._save_as, "Ctrl+Shift+S",
+                         "Save this project under a new name")
+        m_file.addSeparator()
+        self._add_action(m_file, "Sort by Ticked", self._sort_by_ticked, tip="Sort amplicons so ticked items appear first")
+        self._add_action(m_file, "Save Ticked", self._save_ticked, tip="Save ticked amplicons to a JSON file")
+        self._add_action(m_file, "Save as Sub-project", self._save_selected_as_subproject, tip="Save selected amplicons as a new sub-project JSON file")
+        self._add_action(m_file, "Export chart image…", self._export_png,
+                         tip="Save the current melt-map chart as a PNG image")
+        self._add_action(m_file, "Export primers (CSV)…", self._export_csv,
+                         tip="Save the primer-set table as a CSV file")
+        self._add_action(m_file, "Save sequences…", self._save_sequences,
+                         tip="Save the DNA sequences of ticked amplicons as FASTA or TSV")
+        m_file.addSeparator()
+        self._add_action(m_file, "&Quit", self.close, "Ctrl+Q",
+                         "Close MeltScope")
+
+        m_des = self.menuBar().addMenu("&Design")
+        self._add_action(m_des, "Fragment design…", self._open_design,
+                         "Ctrl+D",
+                         "Design candidate fragments for an rsID or genomic "
+                         "position (variant melting profile)")
+        self._add_action(m_des, "MAMA assay…", self._open_mama,
+                         "Ctrl+M",
+                         "Design MAMA allele-specific assays (SNPs, "
+                         "deletions, delins): WT+common and MUT+common "
+                         "primer sets; GC-tail labelling oligo")
+        self._add_action(m_des, "Fragment tiling…", self._open_tiling,
+                         "Ctrl+T",
+                         "Cover a long segment (pasted or a GenBank "
+                         "accession, e.g. NC_012920) with overlapping "
+                         "120-200 bp fragments under a melt-temp cap; "
+                         "circular DNA tiles the origin too")
+
+        m_exp = self.menuBar().addMenu("&Examples")
+        self._add_action(m_exp, "BRAF 127 bp flat vs sloped",
+                         self._load_example_braf)
+        self._add_action(m_exp, "BRAF V600E wt/mut pair",
+                         self._load_example_braf_v600e)
+        self._add_action(m_exp, "BRAF silent T->A (dTm ~ 0)",
+                         self._load_example_braf_silent)
+
+        m_set = self.menuBar().addMenu("S&ettings")
+        self._add_action(m_set, "Primer design settings…",
+                         self._open_settings,
+                         tip="Change the Primer3 annealing-Tm range, primer "
+                             "length, salt, and the melting-model defaults "
+                             "(Na+, max fragment). Applied the next time "
+                             "fragment design / tiling runs.")
+
+        m_help = self.menuBar().addMenu("&Help")
+        self._add_action(m_help, "&User manual…", self._user_manual, "F1",
+                         "Open the MeltScope user manual (F1)")
+        self._add_action(m_help, "&About", self._about,
+                         tip="About MeltScope — CTCE variant melting design")
+
+    def _add_action(self, menu: QMenu, text, slot, shortcut=None, tip=None):
+        act = QAction(text, self)
+        act.triggered.connect(slot)
+        if shortcut:
+            act.setShortcut(shortcut)
+        if tip:
+            act.setToolTip(tip)
+            act.setStatusTip(tip)
+        menu.addAction(act)
+
+    # ------------------------------------------------------------ actions - #
+    def _add_sequence(self):
+        dlg = AddSequenceDialog(self)
+        if dlg.exec():
+            items = dlg.items()
+            if not items:
+                QMessageBox.warning(self, "MeltScope",
+                                    "No usable sequence given.")
+                return
+            for it in items:
+                self.project.add(it)
+            self._refresh_list()
+            self._select_index(len(self.project.items) - 1)
+
+    def _add_pair(self):
+        dlg = AddPairDialog(self)
+        if dlg.exec():
+            it = dlg.item()
+            if not it.wt.strip() or not it.mut.strip():
+                QMessageBox.warning(self, "MeltScope",
+                                    "Both wildtype and mutant need a "
+                                    "sequence.")
+                return
+            self.project.add(it)
+            self._refresh_list()
+            self._select_index(len(self.project.items) - 1)
+
+    def _load_example(self, builder):
+        """Add and compute each item produced by ``builder``."""
+        for it in builder():
+            self.project.add(it)
+            it.compute(self.project.na)
+        self._refresh_list()
+        self._render_plots()
+        self._render_table()
+        self._select_index(len(self.project.items) - 1)
+        self._render_info(self._current_item())
+
+    def _load_example_braf(self):
+        """Add the BRAF flat-vs-sloped illustration (both clamp sides)."""
+        from .examples import braf_flat_vs_sloped_items
+        self._load_example(braf_flat_vs_sloped_items)
+        self.statusBar().showMessage(
+            "BRAF 127 bp: flat plateau under the 5' clamp vs the sloped "
+            "3'-clamped profile (Pichler et al., PMID 15948220)", 6000)
+
+    def _load_example_braf_v600e(self):
+        """Add the BRAF V600E (c.1799T>A) wt/mut pair."""
+        from .examples import braf_v600e_items
+        self._load_example(braf_v600e_items)
+        self.statusBar().showMessage(
+            "BRAF V600E: GTG -> GAG (c.1799T>A) on the 127 bp amplicon "
+            "(flip the GC clamp to compare shapes)", 6000)
+
+    def _load_example_braf_silent(self):
+        """Add the BRAF silent T->A wt/mut pair (dTm ~ 0)."""
+        from .examples import braf_silent_swap_items
+        self._load_example(braf_silent_swap_items)
+        self.statusBar().showMessage(
+            "BRAF silent T->A at base 28: dTm ~ 0.0000 C, delta-area 0.1 "
+            "C*bp -- the same T->A as V600E, but here the curve does not "
+            "move at all", 6000)
+
+    def _open_design(self):
+        """Open the fragment-design dialog (one instance, stays open)."""
+        self._show_design_dialog(mama=False)
+
+    def _open_mama(self):
+        """Open fragment design with MAMA already enabled."""
+        self._show_design_dialog(mama=True)
+
+    def _show_design_dialog(self, mama: bool = False):
+        from .design import DesignDialog
+        dlg = getattr(self, "_design_dlg", None)
+        if dlg is None:
+            dlg = DesignDialog(self, mama=mama)
+            dlg.candidate.connect(self._add_designed)
+            dlg.candidates.connect(self._add_designed_many)
+            self._design_dlg = dlg
+        else:
+            dlg.mama_box.setChecked(bool(mama))
+            dlg.setWindowTitle("MAMA assay design" if mama
+                               else "Fragment design")
+        dlg.refresh_settings()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _open_settings(self):
+        from .app_settings import SettingsDialog
+        dlg = SettingsDialog(self)
+        dlg.exec()
+
+    def _open_tiling(self):
+        """Open the fragment-tiling dialog (one instance, stays open)."""
+        from .tiling import TilingDialog
+        dlg = getattr(self, "_tiling_dlg", None)
+        if dlg is None:
+            dlg = TilingDialog(self)
+            dlg.fragments.connect(self._add_tiling_fragments)
+            self._tiling_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _add_tiling_fragments(self, frags):
+        """Append tiling-walk fragments as ordinary amplicon items.
+
+        The melt of every fragment runs on a worker thread with a progress
+        bar, so adding a large walk does not freeze the window.  Large
+        walks (> MAX_AUTO_PLOTTED_BATCH, e.g. all of mtDNA ~140 fragments)
+        are added with their graphs *un-toggled* so the overlay chart is
+        not flooded; the list and fragment table always refresh.
+        """
+        from .design import MAX_AUTO_PLOTTED_BATCH
+        from .tiling import _AddFragmentsThread
+        if frags is None or not len(frags):
+            return
+        running = getattr(self, "_tiling_add_thread", None)
+        if running is not None and running.isRunning():
+            return                     # a batch is already being added
+        many = len(frags) > MAX_AUTO_PLOTTED_BATCH
+        pd = QProgressDialog(
+            f"Adding amplicons to the project\u2026", "", 0, len(frags), self)
+        pd.setCancelButton(None)
+        pd.setWindowModality(Qt.WindowModal)
+        pd.setMinimumDuration(0)
+        pd.setValue(0)
+        th = _AddFragmentsThread(list(frags), self.project.na, parent=self)
+        th.progress.connect(pd.setValue)
+        th.done.connect(
+            lambda items, bad: self._finish_tiling_add(  # noqa: B023
+                items, bad, many, pd))
+        self._tiling_add_thread = th
+        th.start()
+
+    def _finish_tiling_add(self, items, bad, many, pd):
+        """Attach the computed tiling items and refresh once."""
+        self._tiling_add_thread = None
+        pd.setValue(pd.maximum())
+        pd.close()
+        added = len(items)
+        if added:
+            for it in items:
+                it.plot = not many
+                self.project.add(it)
+            self._refresh_list()
+            if not many:
+                self._render_plots()
+            self._render_table()
+            self._select_index(len(self.project.items) - 1)
+            self.statusBar().showMessage(
+                f"added {added} tiling fragment(s)"
+                + (" (graphs off - tick items in the list to plot them)"
+                   if many else ""), 6000)
+        if bad:
+            QMessageBox.warning(
+                self, "MeltScope", f"Could not compute {bad} tiling "
+                "fragment(s) and they were skipped.")
+
+    def _add_designed_many(self, cands):
+        """Append the best fragment of every designed variant.
+
+        The batch never blocks on a single failure: each bad candidate is
+        noted and one summary warning is shown at the end.  All rows are
+        attached first and the views refreshed once, so adding many
+        variants at once stays fast.
+
+        For big batches (> MAX_AUTO_PLOTTED_BATCH, e.g. the full 400-variant
+        list) plotting every fragment at once would choke the chart, so the
+        items are added with their graphs *un-toggled*: only the list and the
+        primer/fragment table are refreshed, and the user ticks individual
+        rows in the list to plot the ones they want to inspect.
+        """
+        from .design import MAX_AUTO_PLOTTED_BATCH
+        many = len(cands) > MAX_AUTO_PLOTTED_BATCH
+        added, bad = 0, []
+        for cand in cands:
+            try:
+                items, err = self._make_designed_item(cand, plot=not many)
+                if items is None:
+                    bad.append(f"{cand.name}: {err}")
+                    continue
+                for it in items:
+                    self.project.add(it)
+                    added += 1
+            except Exception as exc:                    # noqa: BLE001
+                bad.append(f"{cand.name}: {exc}")
+        if added:
+            self._refresh_list()
+            if not many:
+                self._render_plots()
+            self._render_table()
+            self._select_index(len(self.project.items) - 1)
+            self.statusBar().showMessage(
+                f"designed fragments added: {added}"
+                + (" (graphs off - tick items in the list to plot them)"
+                   if many else ""), 6000)
+        if bad:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "MeltScope",
+                "Could not add these designed fragments:\n\n"
+                + "\n".join(f"- {b}" for b in bad))
+
+    def _make_designed_item(self, cand, plot: bool = True):
+        """Build + compute pair Item(s) for a designed candidate.
+
+        Returns ``([Item, ...], "")`` on success or ``(None, error text)``
+        when the candidate cannot be computed; never raises.  MAMA
+        assays become one wt/mut overlay (GC tail only, no CTCE clamp);
+        the primer table expands that item into WT and MUT rows.  *plot*
+        toggles the new item's graph in the overlay chart.
+        """
+        from .model import Item
+        assay = getattr(cand, "mama", None)
+        if assay is not None:
+            it = Item(kind="pair", name=cand.name, wt=assay.wt_amp,
+                      mut=assay.mut_amp, clamp="none")
+            it.mama_sets = assay.primer_sets()
+            it.plot = plot
+            it.compute(self.project.na)
+            if it.error:
+                return None, it.error
+            if it.result:
+                it.result["mama"] = True
+                it.result["mama_sets"] = it.mama_sets
+                it.result["fp"] = assay.info.wt_forward
+                it.result["rp"] = assay.info.wt_reverse
+                it.result["clamp"] = "none"
+                it.result["melting_shape"] = assay.kind
+                it.result["delta_area"] = assay.delta_tm
+            return [it], ""
+        it = Item(kind="pair", name=cand.name, wt=cand.wt_amp,
+                  mut=cand.mut_amp, clamp=cand.clamp or "5'")
+        it.plot = plot
+        it.compute(self.project.na)
+        if it.error:
+            return None, it.error
+        return [it], ""
+
+    def _add_designed(self, cand, quiet: bool = False):
+        """Append a single designed candidate to the project."""
+        items, err = self._make_designed_item(cand)
+        if items is None:
+            if not quiet:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "MeltScope",
+                                    f"{cand.name}:\n{err}")
+            return cand.name
+        for it in items:
+            self.project.add(it)
+        self._refresh_list()
+        self._render_plots()
+        self._render_table()
+        self._select_index(len(self.project.items) - 1)
+        self.statusBar().showMessage(
+            f"designed fragment added: {cand.name}", 6000)
+        return None
+
+    def _rename_item(self):
+        it = self._current_item()
+        if it is None:
+            return
+        name, ok = QInputDialog.getText(self, "Rename", "Name:",
+                                        text=it.name)
+        if ok and name.strip():
+            it.name = name.strip()
+            self._refresh_list()
+            self._recompute_current()
+
+    def _normalise_or_warn(self, text: str) -> str:
+        try:
+            return cli._normalise_pasted_dna(text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "MeltScope", str(exc))
+            raise
+
+    def _edit_item(self):
+        it = self._current_item()
+        if it is None:
+            return
+        dlg = EditItemDialog(self, it)
+        if dlg.exec() and self._apply_edit(it, dlg):
+            self._refresh_list()
+            self._recompute_current()
+            self.statusBar().showMessage(f"edited {it.name}", 2000)
+
+    def _apply_edit(self, it: Item, dlg) -> bool:
+        """Apply a filled-in EditItemDialog to *it*. Returns False and warns
+        when the sequences are empty or non-ACGT."""
+        try:
+            if dlg.is_pair:
+                wt = self._normalise_or_warn(dlg.sequences()[1])
+                mut = self._normalise_or_warn(dlg.sequences()[2])
+                if not wt or not mut:
+                    raise ValueError("both sequences may not be empty")
+                it.kind = "pair"
+                it.wt, it.mut = wt, mut
+                it.seq = ""
+            else:
+                raw = dlg.sequences()[1]
+                records = (webapp._parse_fasta(raw)
+                           if raw.lstrip().startswith(">") else [])
+                parsed = webapp._pair_sequences(records)
+                if len(parsed) == 1 and parsed[0]["kind"] == "pair":
+                    # explicit >wt/>mut records in the single field replace
+                    # the item with that pair instead of concatenating DNA
+                    was = it.name
+                    it.kind = "pair"
+                    it.wt, it.mut = parsed[0]["wt"], parsed[0]["mut"]
+                    it.seq = ""
+                    dlg_name = (dlg.name_edit.text() or "").strip()
+                    if dlg_name and dlg_name != was:
+                        it.name = dlg_name
+                    else:
+                        it.name = parsed[0]["name"] or it.name
+                    return True
+                seq = self._normalise_or_warn(raw)
+                if not seq:
+                    raise ValueError("sequence may not be empty")
+                if it.kind == "seq":
+                    if seq == it.seq:
+                        it.seq = seq
+                    else:
+                        # single-sequence item edited: original stays the
+                        # wildtype, the edited copy becomes the mutant
+                        it.kind = "pair"
+                        it.wt, it.mut = it.seq, seq
+                        it.seq = ""
+                else:
+                    # pair item edited through a single field: treat the
+                    # edited copy as the mutant of the current wildtype
+                    it.kind = "pair"
+                    it.wt, it.mut = it.wt or it.seq, seq
+                    it.seq = ""
+        except ValueError as exc:
+            QMessageBox.warning(self, "MeltScope", str(exc))
+            return False
+        name = dlg.sequences()[0]
+        if name:
+            it.name = name
+        return True
+
+    def _duplicate_item(self):
+        it = self._current_item()
+        if it is None:
+            return
+        clone = Item.from_dict(it.to_dict())
+        clone.result = None
+        clone.error = ""
+        base, sep, _tail = it.name.rpartition("(copy)")
+        clone.name = (base + "(copy)").strip() if sep \
+            else it.name + " (copy)"
+        self.project.items.insert(self.list.currentRow() + 1, clone)
+        self._refresh_list()
+        self._select_index(self.project.items.index(clone))
+        self.statusBar().showMessage(f"duplicated {it.name} as {clone.name}",
+                                     2000)
+
+    def _context_menu(self, pos):
+        it = self._current_item()
+        menu = QMenu(self)
+        menu.addAction("Edit…", self._edit_item)
+        menu.addAction("Duplicate", self._duplicate_item)
+        if it is not None:
+            menu.addAction("Rename", self._rename_item)
+        if self._current_item() is not None:
+            menu.addAction("Delete", self._remove_item)
+        if self.project.items:
+            menu.addAction("Clear all…", self._clear_items)
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def keyPressEvent(self, event):                 # noqa: N802
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and \
+                self._current_item() is not None:
+            self._remove_item()
+            return
+        super().keyPressEvent(event)
+
+    def _remove_item(self):
+        it = self._current_item()
+        if it is None:
+            return
+        i = self.list.currentRow()
+        name = it.name
+        if 0 <= i < len(self.project.items):
+            del self.project.items[i]
+            self._refresh_list()
+            self._recompute_current()
+            self.statusBar().showMessage(f"deleted {name}", 2000)
+
+    def _clear_items(self):
+        n = len(self.project.items)
+        if not n:
+            return
+        self.project = Project()
+        self.path = None
+        self._refresh_list()
+        self._recompute_current()
+        self._render_plots()
+        self._render_table()
+        self.info.setText("no item selected")
+        self.statusBar().showMessage(f"cleared {n} amplicon(s)", 3000)
+
+    def _new_project(self):
+        self.project = Project()
+        self.path = None
+        self._refresh_list()
+        self._render_plots()
+        self._render_table()
+        self.info.setText("no item selected")
+        self.statusBar().showMessage("new project")
+
+    def _render_plots(self):
+        """Rebuild the single overlay plot from every ticked item."""
+        shown = [it for it in self.project.items if it.plot and it.result
+                 and not it.error]
+        if not shown:
+            self.chart._status = ("tick an amplicon in the list to plot "
+                                  "its melt map")
+            self.chart.set_datasets([])
+            return
+        datasets = []
+        for idx, it in enumerate(shown):
+            fd = it.fragment_profiles(self.project.na)
+            if fd is None:
+                continue
+            color = PALETTE[idx % len(PALETTE)]
+            datasets.append({
+                "name": it.name,
+                "paired": bool(fd["paired"]),
+                "ref_prof": fd["ref_prof"],
+                "alt_prof": fd["alt_prof"],
+                "clamp_len": fd["clamp_len"],
+                "clamp_side": fd["clamp_side"],
+                "mark_idx": fd["mark_idx"],
+                "indel": fd["indel"],
+                "alt_shift": (int(fd["indel"]) if fd["clamp_side"] == "3'"
+                              else 0),
+                "delta_area": float(it.result.get("delta_area", 0.0) or 0.0),
+                "dip": bool(str(it.result.get("melting_shape") or "")
+                            .startswith("dip")),
+                "color": color,
+            })
+        self.chart.set_datasets(datasets)
+
+    # ----------------------------------------------------------- file io - #
+    def _selected_file(self, save: bool):
+        default = os.path.join(os.getcwd(),
+                               os.path.basename(self.path or "untitled")
+                               .replace(".json", ".varmelt.json"))
+        if save:
+            return QFileDialog.getSaveFileName(self, "Save project", default,
+                                               _file_filters())[0]
+        return QFileDialog.getOpenFileName(self, "Open project",
+                                           os.path.dirname(default)
+                                           or os.getcwd(),
+                                           _file_filters())[0]
+
+    def _save_project(self):
+        if not self.path:
+            return self._save_as()
+        try:
+            self.project.save(self.path)
+            self.statusBar().showMessage(f"saved {self.path}", 3000)
+        except OSError as exc:
+            QMessageBox.critical(self, "MeltScope", str(exc))
+
+    def _save_as(self):
+        p = self._selected_file(save=True)
+        if not p:
+            return
+        if not p.endswith(".json"):
+            p += ".varmelt.json"
+        self.path = p
+        self._save_project()
+        self._update_title()
+
+    def _open_project(self):
+        p = self._selected_file(save=False)
+        if not p:
+            return
+        self._open_path(p)
+        self.statusBar().showMessage(f"opened {p}", 3000)
+
+    def _open_path(self, p: str):
+        try:
+            self.project = Project.load(p)
+        except Exception as exc:                            # noqa: BLE001
+            QMessageBox.critical(self, "MeltScope",
+                                 f"cannot open {p}:\n{exc}")
+            return
+        self.path = p
+        self.na_spin.setValue(self.project.na)
+        self.clamp_combo.setCurrentIndex(0)
+        count = len(self.project.items)
+        dlg = QProgressDialog("Rebuilding melt maps…", "Cancel", 0, count,
+                              self)
+        dlg.setWindowTitle("MeltScope")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(400)    # waits before the dialog shows
+        dlg.setAutoClose(True)
+        dlg.setValue(0)
+        for i, it in enumerate(self.project.items):
+            if dlg.wasCanceled():
+                break
+            it.compute(self.project.na)
+            dlg.setValue(i + 1)
+            QGuiApplication.processEvents()
+        dlg.close()
+        self._refresh_list()
+        self._render_plots()
+        self._render_table()
+        if self.project.items:
+            self._select_index(0)
+        self._update_title()
+
+    # ----------------------------------------------------------- exports - #
+    def _export_png(self):
+        visible = [it for it in self.project.items
+                   if it.plot and it.result and not it.error]
+        if not visible:
+            QMessageBox.warning(self, "MeltScope",
+                                "tick an amplicon to plot first")
+            return
+        p, _ = QFileDialog.getSaveFileName(
+            self, "Export chart image",
+            (self.path and os.path.basename(self.path).rsplit(".", 1)[0]
+             or "melting") + "-plots.png", "PNG image (*.png)")
+        if not p:
+            return
+        if not p.endswith(".png"):
+            p += ".png"
+        if self.chart.grab().save(p, "PNG"):
+            self.statusBar().showMessage(f"charts saved to {p}", 3000)
+
+    def _export_csv(self):
+        if not self.project.items:
+            QMessageBox.warning(self, "MeltScope", "nothing to export")
+            return
+        p, _ = QFileDialog.getSaveFileName(self, "Export primers CSV",
+                                           "primers.csv",
+                                           "CSV files (*.csv)")
+        if not p:
+            return
+        if not p.endswith(".csv"):
+            p += ".csv"
+        import csv
+        try:
+            with open(p, "w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                w.writerow(_CSV_HEAD)
+                for it in self.project.items:
+                    row = self._csv_row(it)
+                    if row:
+                        w.writerow(row)
+            self.statusBar().showMessage(f"primers saved {p}", 3000)
+        except OSError as exc:
+            QMessageBox.critical(self, "MeltScope", str(exc))
+
+    def _save_sequences(self):
+        """Save the DNA sequences of all ticked amplicons."""
+        selected = [it for it in self.project.items if it.plot and (it.seq or it.wt or it.mut)]
+        if not selected:
+            QMessageBox.information(self, "MeltScope",
+                                    "no ticked amplicons with sequence data")
+            return
+
+        p, _ = QFileDialog.getSaveFileName(self, "Save sequences",
+                                           "sequences.fasta",
+                                           "FASTA (*.fasta *.fa);;TSV (*.tsv);;CSV (*.csv)")
+        if not p:
+            return
+
+        # Helper to get the sequence for an item
+        def get_sequence(it: Item) -> str:
+            if it.seq:
+                return it.seq
+            elif it.kind == "pair" and (it.wt or it.mut):
+                # return the longer of wt/mut, or concatenate
+                return it.wt or it.mut or ""
+            return ""
+
+        # Decide format from extension
+        ext = p.lower().split(".")[-1]
+        ok = True
+        try:
+            with open(p, "w", encoding="utf-8") as fh:
+                if ext in ("fasta", "fa"):
+                    for it in selected:
+                        name = it.name.replace("\n", " ").replace("\r", "")
+                        seq = get_sequence(it).upper()
+                        if seq:
+                            fh.write(f">{name}\n{seq}\n")
+                elif ext == "tsv":
+                    for it in selected:
+                        name = it.name.replace("\n", " ").replace("\r", "")
+                        seq = get_sequence(it).upper()
+                        if seq:
+                            fh.write(f"{name}\t{seq}\n")
+                else:  # csv
+                    for it in selected:
+                        name = it.name.replace("\n", " ").replace("\r", "")
+                        seq = get_sequence(it).upper()
+                        if seq:
+                            fh.write(f"{name},{seq}\n")
+        except OSError as exc:
+            ok = False
+            QMessageBox.critical(self, "MeltScope", str(exc))
+
+        if ok:
+            self.statusBar().showMessage(f"sequences saved to {p}", 3000)
+
+    def _csv_row(self, it: Item):
+        if it.error or not it.result:
+            return None
+        pair = it.pair()
+        r = it.result
+        return [self.project.items.index(it) + 1, it.name, it.kind_label(),
+                r.get("fp") or (pair.fp_seq if pair else ""),
+                r.get("rp") or (pair.rp_seq if pair else ""),
+                f"{pair.fp_tm_melt:.2f}" if pair and pair.fp_tm_melt else "",
+                f"{pair.rp_tm_melt:.2f}" if pair and pair.rp_tm_melt else "",
+                pair.product_start if pair else "",
+                pair.product_end if pair else "",
+                it.fragment_length() if it.result else "",
+                f"{pair.avg_tm:.2f}" if pair and pair.avg_tm else "",
+                f"{r.get('delta_area', 0.0):.1f}",
+                pair.clamp_position or "none" if pair else "",
+                r.get("melting_shape") or (pair.melting_shape if pair
+                                           else "single strand") or "n/a"]
+
+    # ----------------------------------------------------- compute / view - #
+    def _current_item(self) -> Item:
+        i = self.list.currentRow()
+        if 0 <= i < len(self.project.items):
+            return self.project.items[i]
+        return None
+
+    def _update_action_buttons(self):
+        enabled = self._current_item() is not None
+        for b in (self._edit_button, self._dup_button, self._del_button):
+            b.setEnabled(enabled)
+        self._clear_button.setEnabled(bool(self.project.items))
+
+    def _refresh_list(self):
+        title = self.findChild(QLabel, "listTitle")
+        if title is not None:
+            title.setText(f"<b>Amplicons</b> ({len(self.project.items)})")
+        selected = None
+        if 0 <= self.list.currentRow() < len(self.project.items):
+            selected = self.project.items[self.list.currentRow()]
+        self.list.blockSignals(True)
+        try:
+            self.list.clear()
+            for i, it in enumerate(self.project.items):
+                label = f"{i + 1}.  {it.name}"
+                if it.error:
+                    label += "  [error]"
+                elif it.result:
+                    pair = it.pair()
+                    if pair:
+                        label += f"  ({it.fragment_length()} bp"
+                        if pair.clamp_position:
+                            label += f", {pair.clamp_position} clamp"
+                        label += ")"
+                    if str(it.result.get("melting_shape") or "") \
+                            .startswith("dip"):
+                        label += "  \u26a0 valley"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, it)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if it.plot
+                                   else Qt.Unchecked)
+                self.list.addItem(item)
+            if selected is not None:
+                for r in range(self.list.count()):
+                    if self.list.item(r).data(Qt.UserRole) is selected:
+                        self.list.setCurrentRow(r)
+                        break
+        finally:
+            self.list.blockSignals(False)
+        self._apply_filter()
+        self._update_action_buttons()
+
+    def _apply_filter(self):
+        t = self.filter_edit.text().strip().casefold()
+        for r in range(self.list.count()):
+            item = self.list.item(r)
+            it = item.data(Qt.UserRole)
+            show = (not t) or (it is not None
+                               and t in (it.name or "").casefold())
+            item.setHidden(not show)
+
+    def _list_item_for(self, it, want="table"):
+        """Find the index of *it* in the amplicon list / primer table, or -1."""
+        if it is None:
+            return -1
+        if want == "list":
+            for r in range(self.list.count()):
+                if self.list.item(r).data(Qt.UserRole) is it:
+                    return r
+        else:
+            for r in range(self.table.rowCount()):
+                cell = self.table.item(r, 0)
+                if cell is not None and \
+                        cell.data(Qt.UserRole + 9) is it:
+                    return r
+        return -1
+
+    def _select_index(self, i):
+        self.list.setCurrentRow(i)
+        if 0 <= i < self.list.count():
+            self.list.scrollToItem(self.list.item(i))
+        self._update_action_buttons()
+
+    def _on_item_changed(self, item):
+        it = item.data(Qt.UserRole)
+        if it is None:
+            return
+        new_state = item.checkState() != Qt.Unchecked  # enum, not an int
+        if bool(it.plot) != new_state:
+            it.plot = new_state
+            self._render_plots()
+
+    def _copy_table(self):
+        if not self.table.rowCount():
+            QMessageBox.information(self, "MeltScope", "nothing to copy")
+            return None
+        lines = []
+        lines.append("\t".join(
+            self.table.horizontalHeaderItem(c).text()
+            for c in range(self.table.columnCount())))
+        for r in range(self.table.rowCount()):
+            lines.append("\t".join(
+                self.table.item(r, c).text() if self.table.item(r, c)
+                else "" for c in range(self.table.columnCount())))
+        text = "\n".join(lines)
+        QApplication.clipboard().setText(text)
+        self.statusBar().showMessage("primer set copied to clipboard", 2000)
+        return text
+
+    def _on_select(self):
+        self._update_action_buttons()
+        self._sync_controls_from_item()
+        self._recompute_current()
+        self._highlight_table_row()
+
+    def _highlight_table_row(self):
+        """Keep the primer table showing the row that belongs to the
+        currently selected amplicon in the list."""
+        it = self._current_item()
+        where = self._list_item_for(it, want="table")
+        self.table.blockSignals(True)
+        self.table.clearSelection()
+        if where >= 0:
+            self.table.selectRow(where)
+            self.table.scrollToItem(self.table.item(where, 0))
+        self.table.blockSignals(False)
+
+    def _on_table_row_activated(self, item):
+        """Double-clicking a primer-table row jumps to its amplicon in the
+        numbered list on the left."""
+        cell = self.table.item(item.row(), 0)
+        it = cell.data(Qt.UserRole + 9) if cell is not None else None
+        if it is None:
+            return
+        where = self._list_item_for(it, want="list")
+        if where >= 0:
+            self._select_index(where)
+
+    def _sync_controls_from_item(self):
+        it = self._current_item()
+        if it is None:
+            return
+        self.clamp_combo.blockSignals(True)
+        idx = CLAMP_SIDES.index(it.clamp) if it.clamp in CLAMP_SIDES else \
+            CLAMP_SIDES.index("5'")
+        self.clamp_combo.setCurrentIndex(idx)
+        self.clamp_combo.blockSignals(False)
+
+    def _na_changed(self):
+        self.project.na = self.na_spin.value()
+        self._debounce.start()
+
+    def _clamp_changed(self):
+        it = self._current_item()
+        if it is None:
+            return
+        it.clamp = self.clamp_combo.currentData()
+        self._recompute_current()
+
+    def _recompute_current(self):
+        it = self._current_item()
+        if it is None:
+            self._render_plots()
+            self._render_table()
+            self.info.setText("no item selected")
+            return
+        self.statusBar().showMessage(f"computing {it.name} …")
+        QGuiApplication.processEvents()
+        it.compute(self.project.na)
+        self._refresh_list()
+        self._render_plots()
+        self._render_table()
+        self._render_info(it)
+        if it.error:
+            self.statusBar().showMessage(
+                f"{it.name}: {it.error}", 6000)
+        else:
+            self.statusBar().showMessage(
+                f"{it.name} ready — mean Tm "
+                f"{it.result['ref_mean_tm']:.2f} °C", 2000)
+
+    def _render_info(self, it: Item):
+        if it.error or not it.result:
+            self.info.setText(f"{it.name}: {it.error}" if it.error
+                              else "no data")
+            return
+        r = it.result
+        pair = it.pair()
+
+        kind = it.kind_label()
+        dnalen = it.fragment_length()
+        altnote = (f"  ({r['wt_len']} bp wt vs {r['mut_len']} bp mutant, "
+                   f"diff at base {r['mut_idx'] + 1}"
+                   f"{' plus GC clamp' if it.clamp_side() else ''})"
+                   if r.get("paired") else "")
+        ctxnote = self._variant_context_html(r) if r.get("paired") else ""
+        shape = str(r.get("melting_shape") or "")
+        area = float(r.get("delta_area", 0.0) or 0.0)
+        metrics = ""
+        if r.get("paired"):
+            metrics += f" &nbsp; \u0394area <b>{area:.0f}</b> \u00b0C\u00b7bp"
+        if shape.startswith("dip"):
+            metrics += (" &nbsp; <span style='color:#b33410;"
+                        "font-weight:bold'>\u26a0 {}</span>".format(shape))
+        self.info.setText(
+            f"<b>{it.name}</b> — {kind}, {dnalen} bp{altnote}<br>"
+            f"forward primer <code>{r['fp']}</code> &nbsp; reverse primer "
+            f"<code>{r['rp']}</code> &nbsp; clamp "
+            f"<b>{it.clamp_side() or 'none'}</b>{metrics}"
+            f"{ctxnote}")
+
+    @staticmethod
+    def _variant_context_html(r: dict) -> str:
+        """The wt->mut context with the changed base in red.
+
+        Users unfamiliar with the gene want to see where on the amplicon the
+        variant sits, so this renders ~12 flanks on each side and paints the
+        changed base (defined by ``idx``, the first differing position)
+        bold red with its wt->mut change.
+        """
+        i = int(r.get("idx") or -1)
+        wt = r.get("refseq") or ""
+        mut = r.get("altseq") or ""
+        if i < 0 or i >= len(wt) or i >= len(mut) or wt[i] == mut[i]:
+            return ""
+        w = 12
+        left = wt[max(0, i - w):i]
+        right = wt[i + 1:i + 1 + w]
+        return ("<br>context 5\u2032-" + left
+                + "<b><font color='#d41a1a'>" + wt[i] + "\u2192" + mut[i]
+                + "</font></b>" + right + "-3\u2032&nbsp; (base "
+                + str(i + 1) + ")")
+
+    def _render_table(self):
+        """Primer-set table: one row per computed amplicon (so every added
+        sequence shows up, not just the selected one).  Numeric columns sort
+        by value (click a column header, like the design dialog)."""
+        rows = [it for it in self.project.items
+                if it.result and not it.error]
+        self.table.setSortingEnabled(False)
+        numeric_cols = {0, 4, 5, 6, 7, 8, 9, 10}   # #, Tm, start/end, len, Δarea
+        expanded = []
+        for it in rows:
+            sets = (it.result or {}).get("mama_sets") or [None]
+            for s in sets:
+                expanded.append((it, s))
+        self.table.setRowCount(len(expanded))
+        for r, (it, s) in enumerate(expanded):
+            pair = it.pair()
+            res = it.result
+            pairwise = bool(res.get("paired"))
+            if s:
+                name = f"{it.name} [{s['allele']}]"
+                fp_raw, rp_raw = s["forward"], s["reverse"]
+                length = s["length"]
+                shape = "label " + s["label"]
+                clamp_txt = "GC-tail (label)"
+            else:
+                name = it.name
+                fp_raw = res.get("fp") or (pair.fp_seq if pair else "")
+                rp_raw = res.get("rp") or (pair.rp_seq if pair else "")
+                length = it.fragment_length()
+                shape = (res.get("melting_shape") or
+                         (pair.melting_shape if pair else None) or
+                         ("n/a" if pairwise else "single strand"))
+                clamp_txt = ((pair.clamp_position or "none") if pairwise and pair
+                             else res.get("clamp", "none"))
+            no = self.project.items.index(it) + 1
+            cols = [str(no), name, fp_raw, rp_raw,
+                    f"{pair.fp_tm_melt:.2f}" if pair and pair.fp_tm_melt
+                    else "",
+                    f"{pair.rp_tm_melt:.2f}" if pair and pair.rp_tm_melt
+                    else ""]
+            if pairwise and pair:
+                cols += [pair.product_start, pair.product_end, length,
+                         f"{pair.avg_tm:.2f}" if pair.avg_tm else "",
+                         f"{res.get('delta_area', 0.0):.1f}",
+                         clamp_txt, shape]
+            else:
+                cols += ["", "", length,
+                         f"{res['ref_mean_tm']:.2f}",
+                         "0.0", clamp_txt, shape]
+            for c, val in enumerate(cols):
+                item = SortableItem(str(val))
+                if c in numeric_cols and val not in (None, ""):
+                    try:
+                        item.setData(Qt.UserRole, float(val))
+                    except (TypeError, ValueError):
+                        pass
+                self.table.setItem(r, c, item)
+            self.table.item(r, 0).setData(Qt.UserRole + 9, it)
+        self.table.setSortingEnabled(True)
+        sec, order = self._table_sort or (0, Qt.AscendingOrder)
+        if sec >= 0:
+            self.table.sortItems(sec, order)
+        self.table.horizontalHeader().setSortIndicator(sec, order)
+
+    def _user_manual(self):
+        """Show the built-in HTML user manual (Help → User manual / F1)."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle(help_docs.MANUAL_TITLE)
+        dlg.resize(640, 520)
+        lay = QVBoxLayout(dlg)
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setHtml(help_docs.MANUAL_HTML)
+        lay.addWidget(browser)
+        box = QDialogButtonBox(QDialogButtonBox.Ok)
+        box.accepted.connect(dlg.accept)
+        lay.addWidget(box)
+        dlg.exec()
+
+    def _about(self):
+        QMessageBox.about(self, "MeltScope",
+                          f"MeltScope v{APP_VERSION} — WinMelt-style "
+                          "melting-profile "
+                          "workbench.\n\nPaste any DNA fragment (or "
+                          "wildtype/mutant pair), add a GC clamp, adjust "
+                          "the salt, and inspect the per-base melt map and "
+                          "the 20-bp primer set. Projects can be saved and "
+                          "reopened to revisit or adjust results.\n\n"
+                          "Melting core: Blossey–Carlon / DNAMelting port "
+                          "(varmelt.reference).")
+
+    def _update_title(self):
+        self.setWindowTitle(
+            f"MeltScope v{APP_VERSION} — CTCE variant melting design")
+
+    def closeEvent(self, event):                    # noqa: N802
+        self._debounce.stop()
+        # Let a running design batch finish before the dialog (and its worker
+        # thread) are destroyed -- otherwise Qt aborts the whole process.
+        dlg = getattr(self, "_design_dlg", None)
+        if dlg is not None:
+            dlg.shutdown()
+        super().closeEvent(event)
+
+
+    def _sort_by_ticked(self):
+        """Sort the amplicon list by ticked/unchecked state (ticked first)."""
+        if not self.project:
+            self.statusBar().showMessage("No project loaded", 2000)
+            return
+        if not self.list.count():
+            return
+        order = []
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item is None:
+                continue
+            it = item.data(Qt.UserRole)
+            if it is None and i < len(self.project.items):
+                it = self.project.items[i]
+            if it is not None:
+                checked = item.checkState() == Qt.Checked
+                it.plot = checked
+                order.append((checked, it))
+        order_sorted = sorted(order, key=lambda x: not x[0])
+        self.project.items = [it for _, it in order_sorted]
+        self._refresh_list()
+
+    def _save_ticked(self):
+        """Save ticked amplicons to a file."""
+        ticked = []
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item is None:
+                continue
+            if item.checkState() == Qt.Checked:
+                it = item.data(Qt.UserRole)
+                if it is None and i < len(self.project.items):
+                    it = self.project.items[i]
+                if it is not None:
+                    ticked.append(it)
+        if not ticked:
+            self.statusBar().showMessage("No ticked amplicons to save", 2000)
+            return
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "Save ticked amplicons", "", "JSON (*.json);;All Files (*)")
+        if path:
+            data = []
+            for it in ticked:
+                if getattr(it, 'kind', 'seq') == 'seq':
+                    data.append({"name": it.name, "sequence": it.seq or ""})
+                else:
+                    data.append({"name": it.name, "wt": it.wt or "", "mut": it.mut or ""})
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self.statusBar().showMessage(f"saved {len(ticked)} ticked amplicons", 2000)
+
+    def _save_selected_as_subproject(self):
+        """Save selected amplicons as a new sub-project."""
+        selected = []
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item is None:
+                continue
+            if item.isSelected():
+                it = item.data(Qt.UserRole)
+                if it is None and i < len(self.project.items):
+                    it = self.project.items[i]
+                if it is not None:
+                    selected.append(it)
+        if not selected:
+            self.statusBar().showMessage("No selected amplicons to save", 2000)
+            return
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "Save as sub-project", "", "JSON (*.json);;All Files (*)")
+        if path:
+            data = []
+            for it in selected:
+                if getattr(it, 'kind', 'seq') == 'seq':
+                    data.append({"name": it.name, "sequence": it.seq or ""})
+                else:
+                    data.append({"name": it.name, "wt": it.wt or "", "mut": it.mut or ""})
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self.statusBar().showMessage(f"saved {len(selected)} selected amplicons as sub-project", 2000)
+
+
+def build_app(argv=None, project_path=None):
+    app = QApplication(argv if argv is not None else sys.argv)
+    apply_dark_theme(app)
+    win = MainWindow()
+    if project_path:
+        win._open_path(project_path)
+    win.show()
+    return app, win
+
+
+def main(argv=None):
+    project_path = None
+    if argv and len(argv) > 1:
+        project_path = argv[1]
+    app, win = build_app(argv, project_path)
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "varmelt"
+version = "0.4.0"
+description = "Variant melting profiles and MAMA assays: Primer3 + Blossey-Carlon maps, allele-specific primers for SNPs and deletions"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["primer3-py>=2.0.0"]
+
+[project.optional-dependencies]
+two-bit = ["py2bit>=0.3.0"]
+gui = ["PySide6>=6.5"]
+
+[tool.setuptools]
+packages = ["varmelt", "varmelt.gui"]

@@ -1,0 +1,1215 @@
+#!/usr/bin/env python
+"""Headless smoke tests for the PySide6 desktop GUI (offscreen platform).
+
+Run with:  QT_QPA_PLATFORM=offscreen .venv/bin/python tests/test_gui.py
+"""
+import os
+import sys
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import tempfile
+
+from varmelt.gui.model import Item, Project
+from varmelt.gui.plot import MeltChart
+
+SEQ = "ACGT" * 20                       # 80 bp
+MUT = SEQ[:40] + "T" + SEQ[41:]         # A -> T at base 40/41
+
+failures = 0
+
+
+def ok(cond, msg):
+    global failures
+    if cond:
+        print(f"[ok] {msg}")
+    else:
+        failures += 1
+        print(f"[FAIL] {msg}")
+
+
+def test_model_compute_roundtrip():
+    p = Project()
+    p.add(Item(kind="seq", name="frag", seq=SEQ, clamp="5'"))
+    p.add(Item(kind="pair", name="frag_pair", wt=SEQ, mut=MUT, clamp="3'"))
+    for it in p.items:
+        it.compute(p.na)
+    ok(not p.items[0].error, "seq item computes without error")
+    ok(not p.items[1].error, "pair item computes without error")
+
+    r = p.items[0].result
+    for key in ("ref_prof", "refseq", "fp", "rp", "pairs", "ref_mean_tm"):
+        ok(key in r, f"seq result has '{key}'")
+    ok(len(r["ref_prof"]) == len(SEQ), "profile length == dnalen")
+    ok(r["fp"] == SEQ[:20], "forward primer == first 20 bases")
+    from varmelt.primers import _revcomp
+    ok(r["rp"] == _revcomp(SEQ[-20:]), "reverse primer == revcomp of last 20")
+    ok(r["pairs"][0].clamp_position == "5'", "seq clamp on 5'")
+    ok(r["pairs"][0].fp_seq.startswith("CGCC"), "5' clamp attached to fp")
+    from varmelt.primers import GC_CLAMP
+    ok(p.items[0].fragment_length() == len(SEQ) + len(GC_CLAMP),
+       "fragment length counts the GC-clamp bases")
+    nc = Item(kind="seq", name="noclam", seq=SEQ, clamp="none")
+    nc.compute(p.na)
+    ok(nc.fragment_length() == len(SEQ),
+       "without a clamp the fragment length is the bare amplicon")
+
+    rp = p.items[1].result
+    ok(rp["paired"] is True, "pair result is paired")
+    ok(rp["idx"] == 40, "mutation index is 40")
+    ok(rp["indel"] == 0, "no indel for equal-length pair")
+    ok(rp["pairs"][0].clamp_position == "3'", "pair clamp on 3'")
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "proj.varmelt.json")
+        p.save(path)
+        p2 = Project.load(path)
+        ok(p2.na == p.na, "na round-trips")
+        ok(len(p2.items) == 2, "item count round-trips")
+        ok(p2.items[0].seq == SEQ and p2.items[1].wt == SEQ,
+           "sequences round-trip")
+        ok(p2.items[0].name == "frag" and p2.items[1].name == "frag_pair",
+           "names round-trip")
+        p2.items[1].compute(p2.na)
+        ok(not p2.items[1].error, "loaded pair recomputes cleanly")
+
+
+def test_chart_renders_png():
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+    from varmelt.gui.plot import MeltChart
+    from varmelt.primers import GC_CLAMP
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    win.project.add(Item(kind="seq", name="frag", seq=SEQ, clamp="5'"))
+    win.project.add(Item(kind="pair", name="frag_pair", wt=SEQ, mut=MUT,
+                         clamp="3'"))
+    win._refresh_list()
+    win.list.setCurrentRow(0)
+    win._recompute_current()
+    it = win._current_item()
+    ok(not it.error, "chart item computes")
+    win.project.items[1].compute(win.project.na)
+    win._refresh_list()
+    win._render_plots()
+
+    ch = win.chart
+    ok(len(ch._datasets) == 2, "one overlay contains both ticked items")
+    ok(ch._datasets[0]["color"] != ch._datasets[1]["color"],
+       "each item gets its own line colour")
+    ok(win._csv_row(win.project.items[1])
+       and win._csv_row(win.project.items[1])[1] == "frag_pair",
+       "csv row for pair")
+    row = win._csv_row(win.project.items[1])
+    ok(row[7] == 0 and row[8] == 79 and row[9] == 80 + len(GC_CLAMP),
+       "product coords + fragment length incl. the 3' GC clamp in csv")
+
+# physical-fragment axis: base 1 is always the left edge; the clamp
+    # tail occupies real bases on the end that carries it (5' -> bases
+    # 1..42, 3' -> after the amplicon)
+    ok(ch._data_x0 == 0, "base 1 starts at the left edge of the plot")
+    ok(ch.max_fragment_len() == len(SEQ) + len(GC_CLAMP),
+       "x axis spans the full physical fragment (amplicon + clamp)")
+    d5 = ch._datasets[0]
+    d3 = ch._datasets[1]
+    ok(MeltChart.substrate_x(d5, 0) == 0,
+       "physical coords: substrate index 0 is x 0 (base 1)")
+    ok(MeltChart.substrate_x(d5, len(GC_CLAMP)) == len(GC_CLAMP),
+       "5' clamp occupies physical bases 1..42")
+    ok(MeltChart.substrate_x(d5, len(GC_CLAMP) + 40) == len(GC_CLAMP) + 40,
+       "5' clamp: amplicon base 1 sits at physical base 43")
+    ok(MeltChart.substrate_x(d3, 0) == 0,
+       "3' clamp: amplicon base 1 is physical base 1")
+    ok(MeltChart.substrate_x(d3, len(GC_CLAMP)) == len(GC_CLAMP),
+       "3' clamp: clamp bases follow the amplicon")
+    ok(ch._data_x1 == len(SEQ) + len(GC_CLAMP),
+       "x axis ends at the last physical base")
+
+    # GC clamp is not a primer: reported primers are the bare 20-mers
+    from varmelt.primers import _revcomp
+    ok(win.project.items[0].result["fp"] == SEQ[:20],
+       "FP sequence is the bare 20-mer")
+    ok(win.project.items[0].result["rp"] == _revcomp(SEQ[-20:]),
+       "RP sequence is the bare 20-mer")
+
+    pm = ch.grab()
+    ok(not pm.isNull(), "overlay plot paints to pixmap")
+    ok(ch._delta_count == 1, "only the pair fills a delta area")
+    ok(ch._legend_lines == 3, "legend lists seq, pair and its mutant line")
+    ok(any("\u0394area" in t for t in ch._legend_texts),
+       "legend reports the pair's numeric delta area")
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "chart.png")
+        ok(pm.save(path, "PNG") and os.path.getsize(path) > 0,
+           "chart PNG written")
+
+    # zoom in/out works and reset restores the full view
+    x0, x1 = ch._view_x0, ch._view_x1
+    span0 = x1 - x0
+    yspan0 = ch._view_y1 - ch._view_y0
+    ch.zoom_in()
+    ok(ch._view_x1 - ch._view_x0 < span0, "zoom in narrows the x view")
+    ok(ch._view_y1 - ch._view_y0 < yspan0, "zoom in narrows the y axis too")
+    ch.zoom_out()
+    ok(ch._view_x1 - ch._view_x0 > 0.9 * span0,
+       "zoom out widens back towards the data span")
+    ch.reset()
+    ok(ch._view_x0 == ch._data_x0 and ch._view_x1 == ch._data_x1,
+       "reset returns to the full data span")
+    ok(ch._view_y0 == ch._data_y0 and ch._view_y1 == ch._data_y1,
+       "reset returns the y axis to the full Tm range")
+
+    # a drag rectangle zooms into the boxed region (left-drag rubber band)
+    from PySide6.QtCore import QRectF
+    ch.reset()
+    pad_l, pad_r, pad_t, pad_b = ch._pad_l, ch._pad_r, ch._pad_t, ch._pad_b
+    plot_w = ch.width() - pad_l - pad_r
+    plot_h = ch.height() - pad_t - pad_b
+    dx = ch._data_x1 - ch._data_x0
+    dy = ch._data_y1 - ch._data_y0
+    # box over the middle third of the x axis, middle band of the y axis
+    left = pad_l + plot_w / 3
+    right = pad_l + 2 * plot_w / 3
+    top = pad_t + plot_h / 3
+    bottom = pad_t + 2 * plot_h / 3
+    expect_x = ch._data_x0 + (left - pad_l) / plot_w * dx
+    expect_t_bot = ch._data_y0 + (plot_h - (bottom - pad_t)) / plot_h * dy
+    expect_t_top = ch._data_y0 + (plot_h - (top - pad_t)) / plot_h * dy
+    ch._zoom_rect(QRectF(left, top, right - left, bottom - top))
+    ok(abs(ch._view_x0 - expect_x) < 1e-9,
+       "rubber band: x starts at the box's left data value")
+    ok(abs(ch._view_y0 - expect_t_bot) < 1e-9,
+       "rubber band: y low edge is the box's bottom (cold) Tm")
+    ok(abs(ch._view_y1 - expect_t_top) < 1e-9,
+       "rubber band: y high edge is the box's top (hot) Tm")
+    ok(ch._view_x1 - ch._view_x0 < dx
+       and ch._view_y1 - ch._view_y0 < dy,
+       "rubber-band zoom narrows both axes to the box")
+    zx0, zx1, zy0, zy1 = (ch._view_x0, ch._view_x1,
+                          ch._view_y0, ch._view_y1)
+    ch._zoom_rect(QRectF(left, top, 2, 2))
+    ok((ch._view_x0, ch._view_x1, ch._view_y0, ch._view_y1) == (zx0, zx1, zy0, zy1),
+       "a sub-6 px drag is ignored (no accidental zoom)")
+    ch.reset()
+
+    # zoomed/panned curves are clipped to the plot box: no item colour may
+    # appear in the margins, even when a chunk of fragment lies off-screen
+    win.show()
+    app.processEvents()
+    ch._zoom_rect(QRectF(pad_l + plot_w / 4, pad_t + plot_h / 4,
+                         plot_w / 2, plot_h / 2))
+    pm = ch.grab()
+    img = pm.toImage()
+
+    def _hex_rgb(c):
+        return (int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16))
+
+    def _near(px, rgb, tol=60):
+        return (abs(px.red() - rgb[0]) <= tol
+                and abs(px.green() - rgb[1]) <= tol
+                and abs(px.blue() - rgb[2]) <= tol)
+
+    rgbs = [_hex_rgb(d["color"]) for d in ch._datasets]
+    leaks = 0
+    for x in range(0, pad_l - 3):
+        for y in range(pad_t, pad_t + plot_h):
+            px = img.pixelColor(x, y)
+            if any(_near(px, c) for c in rgbs):
+                leaks += 1
+    ok(leaks == 0, "zoomed curves never cross the y axis into the left margin")
+    leaks = 0
+    for y in range(pad_t + plot_h + 1, pad_t + plot_h + 10):
+        for x in range(pad_l, ch.width() - pad_r):
+            px = img.pixelColor(x, y)
+            if any(_near(px, c) for c in rgbs):
+                leaks += 1
+    ok(leaks == 0, "zoomed curves never cross the bottom axis into the ruler")
+    win.close()
+
+    # the primer table lists every computed fragment, not just the selected
+    win._render_table()
+    ok(win.table.rowCount() == 2, "primer table row per computed item")
+    ok(win.table.columnCount() == 13,
+       "primer table carries a # + separation (delta-area) column")
+    # find each amplicon by name (col 0 = #, col 1 = name)
+    cell = win.table.item(0, 1).text()
+    seq_row = 0 if cell == "frag" else 1
+    pair_row = 1 - seq_row
+    ok(win.table.item(seq_row, 0).text() == "1"
+       and win.table.item(pair_row, 0).text() == "2",
+       "table # matches the numbered amplicon list")
+    ok(win.table.item(seq_row, 1).text() == "frag"
+       and win.table.item(pair_row, 1).text() == "frag_pair",
+       "amplicon names in the column after #")
+    ok(win.table.item(seq_row, 2).text() == SEQ[:20],
+       "forward primer still the bare 20-mer")
+    ok(win.table.item(pair_row, 8).text() == str(80 + len(GC_CLAMP)),
+       "pair column: fragment length includes the 3' GC clamp")
+    ok(win.table.item(seq_row, 8).text() == str(80 + len(GC_CLAMP)),
+       "seq column: fragment length includes the 5' GC clamp")
+    ok(float(win.table.item(pair_row, 10).text()) > 0,
+       "pair delta area is a positive number")
+    ok(win.table.item(pair_row, 12).text() in ("flat/slope ok", "n/a")
+       or win.table.item(pair_row, 12).text().startswith("dip"),
+       "pair melting shape is reported")
+    ok(win._csv_row(win.project.items[1])[11]
+       == win.table.item(pair_row, 10).text(),
+       "csv delta area matches the table cell")
+
+    # untick the pair -> a single dataset remains
+    win.project.items[1].plot = False
+    win._render_plots()
+    ok(len(ch._datasets) == 1, "unticking removes the graph from the overlay")
+    win.project.items[0].plot = False
+    win._render_plots()
+    ok(len(ch._datasets) == 0
+       and "tick an amplicon" in ch._status,
+       "nothing ticked -> placeholder message")
+
+    win._refresh_list()
+    ok(win.list.count() == 2, "two rows in amplikon list")
+
+
+def test_edit_duplicate_delete():
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.dialogs import EditItemDialog
+    from varmelt.gui.main import MainWindow
+    from varmelt import cli
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    win.project.add(Item(kind="seq", name="frag", seq=SEQ, clamp="5'"))
+    win._refresh_list()
+    win.list.setCurrentRow(0)
+    win._recompute_current()
+
+    # duplicate
+    win._duplicate_item()
+    ok(len(win.project.items) == 2, "duplicate appends a new item")
+    dup = win.project.items[1]
+    ok(dup.name == "frag (copy)" and dup.seq == SEQ,
+       "duplicate copies sequence + name suffix")
+    ok(dup.clamp == "5'", "duplicate copies clamp")
+    win._recompute_current()
+    ok(not dup.error, "duplicate recomputes cleanly")
+
+    # edit a seq item into a wt/mut pair by changing one base
+    target = win.project.items[1]
+    dlg = EditItemDialog(win, target)
+    dlg.seq_edit.setPlainText(MUT)
+    win._apply_edit(target, dlg)
+    ok(target.kind == "pair", "base edit converts item to wt/mut pair")
+    ok(target.wt == SEQ and target.mut == MUT,
+       "original kept as wildtype, edited copy as mutant")
+    win._recompute_current()
+    ok(not target.error, "converted pair recomputes")
+
+    # keep it a sequence when untouched
+    dlg2 = EditItemDialog(win, win.project.items[0])
+    win._apply_edit(win.project.items[0], dlg2)
+    ok(win.project.items[0].kind == "seq", "unchanged edit keeps seq kind")
+
+    # delete
+    before = len(win.project.items)
+    win.list.setCurrentRow(1)
+    win._remove_item()
+    ok(len(win.project.items) == before - 1, "delete removes the item")
+    ok(all(i.kind == "seq" for i in win.project.items),
+       "remaining items intact after delete")
+
+
+def test_edit_field_bare_headers():
+    """Pasting explicit >wt/>mut records into the edit dialog's single
+    field replaces the item with exactly that pair.  (Regression: the two
+    DNA strings used to be header-stripped and concatenated into one bogus
+    mutant, giving an 'identical sequences' error.)"""
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.dialogs import EditItemDialog
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    it = Item(kind="seq", name="frag", seq=SEQ, clamp="5'")
+    win.project.add(it)
+    win._refresh_list()
+    win.list.setCurrentRow(0)
+    win._recompute_current()
+
+    dlg = EditItemDialog(win, it)
+    dlg.seq_edit.setPlainText(">wt\n" + SEQ + "\n>mut\n" + MUT)
+    ok(win._apply_edit(it, dlg), "edit keeps explicit wt/mut")
+    ok(it.kind == "pair" and it.wt == SEQ and it.mut == MUT,
+       "edit field pair: wt/mut kept, no concatenation")
+    ok(it.name == "wt/mut", "edit field pair: name from the records")
+    win._recompute_current()
+    ok(not it.error, "edit field pair computes cleanly")
+
+    # a single-sequence edit still follows the old wildtype->mutant rule
+    it2 = Item(kind="seq", name="frag2", seq=SEQ, clamp="5'")
+    win.project.add(it2)
+    win._refresh_list()
+    win.list.setCurrentRow(1)
+    win._recompute_current()
+    dlg2 = EditItemDialog(win, it2)
+    dlg2.seq_edit.setPlainText(MUT)
+    ok(win._apply_edit(it2, dlg2), "plain edit applies")
+    ok(it2.kind == "pair" and it2.wt == SEQ and it2.mut == MUT,
+       "plain edit keeps original wt, edited copy as mutant")
+
+
+def test_project_schema():
+    d = Project(na=0.05).to_dict()
+    ok(d["app"] == "MeltScope" and d["version"] == 1,
+       "project carries app + version")
+    ok(Project.from_dict(d).na == 0.05, "na stored in schema")
+
+
+def test_dialogs_and_filter_string():
+    from varmelt.gui.dialogs import (AddPairDialog, AddSequenceDialog,
+                                     CLAMP_SIDES)
+    from varmelt.gui.main import MainWindow, _file_filters
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()                       # no default-clamp mixup
+    dlg = AddSequenceDialog(win)
+    ok(dlg.clamp_row.value() in CLAMP_SIDES,
+       "sequence dialog default clamp is a valid side")
+    new = AddSequenceDialog(win)
+    new.seq_edit.setPlainText(">a\n" + SEQ + "\n>b_wt\n" + SEQ +
+                              "\n>b_mut\n" + MUT)
+    items = new.items()
+    ok(len(items) == 2, "dialog parses seq + wt/mut pair")
+    ok(items[0].kind == "seq" and items[1].kind == "pair",
+       "dialog yields seq and pair items")
+
+    bare = AddSequenceDialog(win)
+    bare.seq_edit.setPlainText(">Wt\n" + SEQ + "\n>mut\n" + MUT +
+                               "\n>solo\n" + SEQ)
+    b = bare.items()
+    ok(len(b) == 2 and b[0].kind == "pair" and b[1].kind == "seq",
+       "bare >Wt/>mut headers are paired (dip colouring works)")
+    ok(b[0].name == "Wt/mut" and b[0].wt == SEQ and b[0].mut == MUT,
+       "bare pair keeps wildtype/mutant strings and name")
+
+    dlg2 = AddPairDialog(win)
+    dlg2.wt_edit.setPlainText(SEQ)
+    dlg2.mut_edit.setPlainText(MUT)
+    it = dlg2.item()
+    ok(it.wt == SEQ and it.mut == MUT, "pair dialog captures strings")
+
+    f = _file_filters()
+    ok("varmelt project (*.varmelt.json)" in f and ";;" in f,
+       "file filters build a valid string")
+
+
+def test_buttons_and_table():
+    from PySide6.QtWidgets import (QAbstractItemView, QApplication,
+                                   QTableWidgetItem)
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    ok(not win._edit_button.isEnabled()
+       and not win._dup_button.isEnabled()
+       and not win._del_button.isEnabled(),
+       "edit/duplicate/delete disabled with nothing selected")
+
+    win.project.add(Item(kind="seq", name="frag", seq=SEQ, clamp="5'"))
+    win._refresh_list()
+    win.list.setCurrentRow(0)
+    win._recompute_current()
+    ok(win._edit_button.isEnabled() and win._dup_button.isEnabled()
+       and win._del_button.isEnabled(),
+       "edit/duplicate/delete enabled once a row is selected")
+
+    # primer table is editable and carries a Copy action
+    ok(bool(win.table.editTriggers()
+            & (QAbstractItemView.DoubleClicked
+               | QAbstractItemView.EditKeyPressed)),
+       "primer table cells are editable")
+    ok(win.table.item(0, 2).text() == SEQ[:20],
+       "table shows the bare forward primer")
+    text = win._copy_table()
+    ok(text is not None and "Forward primer" in text
+       and SEQ[:20] in text,
+       "copy returns the header + primer row")
+
+    # manual edit to a cell is not clobbered by the next render
+    win.table.setItem(0, 2, QTableWidgetItem("CUSTOM-RP"))
+    win._render_table()
+    ok(win.table.item(0, 2).text() == SEQ[:20],
+       "render refreshes primers for the current item")
+
+
+def test_clamp_anchor_indel():
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+    from varmelt.gui.model import Item
+    from varmelt.gui.plot import MeltChart
+    from varmelt.primers import GC_CLAMP
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    DEL = SEQ[:40] + SEQ[41:]            # 1-base deletion in the amplicon
+    win.project.add(Item(kind="pair", name="del_5", wt=SEQ, mut=DEL,
+                         clamp="5'"))
+    win.project.add(Item(kind="pair", name="del_3", wt=SEQ, mut=DEL,
+                         clamp="3'"))
+    win.project.add(Item(kind="pair", name="snp_3", wt=SEQ, mut=MUT,
+                         clamp="3'"))
+    win.project.add(Item(kind="pair", name="del_none", wt=SEQ, mut=DEL))
+    for it in win.project.items:
+        it.compute(win.project.na)
+    win._refresh_list()
+    win._render_plots()
+    ch = win.chart
+    datasets = {d["name"]: d for d in ch._datasets}
+
+    d5 = datasets["del_5"]
+    d3 = datasets["del_3"]
+    ok(d5["alt_shift"] == 0,
+       "5' clamp keeps the mutant at physical positions (clamp glued left)")
+    ok(d3["alt_shift"] == 1,
+       "3' clamp right-anchors the mutant by the indel length")
+    ok(datasets["del_none"]["alt_shift"] == 0, "no clamp: no shift")
+    ok(datasets["snp_3"]["alt_shift"] == 0,
+       "3' clamp SNP (indel 0): no shift needed")
+
+    # the shifted mutant still overlays its clamp onto the wildtype clamp
+    ref3 = d3["ref_prof"]
+    alt3 = d3["alt_prof"]
+    cl = len(GC_CLAMP)
+    ok(len(alt3) - cl + d3["alt_shift"] == len(ref3) - cl,
+       "3' clamp: mutant clamp start lands exactly on the wt clamp start")
+    ok(d3["indel"] == len(ref3) - len(alt3), "indel is the length deficit")
+
+    # the delta band only compares amplicon bases on either side
+    ok(ch._amp_window(len(ref3), "3'", cl) == (0, len(ref3) - cl),
+       "3' amplicon window excludes the tail clamp")
+    ok(ch._amp_window(len(alt3), "3'", cl) == (0, len(alt3) - cl),
+       "3' mutant window excludes its tail clamp too")
+    ok(ch._amp_window(len(ref3), "5'", cl) == (cl, len(ref3)),
+       "5' amplicon window excludes the head clamp")
+    ok(ch._amp_window(len(ref3), None, cl) == (0, len(ref3)),
+       "no clamp: whole profile is compared")
+    ok(ch._data_x0 == 0, "a deletion keeps the plot starting at base 1")
+
+
+def test_example_menu_braf_flat_vs_sloped():
+    from varmelt.gui.examples import (BRAF_FLAT_VS_SLOPED,
+                                      braf_flat_vs_sloped_items)
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    items = braf_flat_vs_sloped_items()
+    ok(len(items) == 2, "the BRAF example ships as two clamp sides")
+    ok(len(BRAF_FLAT_VS_SLOPED) == 127, "BRAF example fragment is 127 bp")
+    ok({i.clamp for i in items} == {"5'", "3'"}, "clamps are 5' and 3'")
+
+    win = MainWindow()
+    win._load_example_braf()
+    app.processEvents()
+    ok(len(win.project.items) == 2, "example loads two amplicons")
+    flat = next(i for i in win.project.items if i.clamp == "5'")
+    sloped = next(i for i in win.project.items if i.clamp == "3'")
+    ok(flat.result and sloped.result, "both example items compute")
+    ok(flat.result["melting_shape"] == "flat/slope ok"
+       == sloped.result["melting_shape"],
+       "both clamps read flat/slope ok — the contrast is visible, not flagged")
+
+    # the illustration: a long dead-flat run under the 5' clamp, but the
+    # same DNA is a steep slope when the clamp is on the 3' (PMID 15948220)
+    from varmelt import reference as R
+    from varmelt.primers import GC_CLAMP
+    p5 = R.calc_tm_profile(GC_CLAMP + BRAF_FLAT_VS_SLOPED, Na=0.013)
+    p3 = R.calc_tm_profile(BRAF_FLAT_VS_SLOPED + GC_CLAMP, Na=0.013)
+
+    def flat_run(prof, amps):
+        run = best = 0
+        prev = None
+        for i in range(amps[0], amps[1] + 1):
+            v = prof[i]
+            if v is None:
+                prev = None
+                continue
+            run = run + 1 if prev is not None and abs(v - prev) <= 0.05 else 1
+            best = max(best, run)
+            prev = v
+        return best
+
+    ok(flat_run(p5, (len(GC_CLAMP), len(p5) - 1)) >= 60,
+       "5' clamp: a long flat plateau (>=60 bp) illustrates the flat "
+       "fragment")
+    ok(flat_run(p3, (0, len(p3) - len(GC_CLAMP) - 1)) <= 20,
+       "3' clamp: the same DNA is sloped, no long plateau")
+
+
+def test_example_menu_braf_v600e_and_toggle():
+    from varmelt.gui.examples import BRAF_FLAT_VS_SLOPED, braf_v600e_items
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    items = braf_v600e_items()
+    ok(len(items) == 1 and items[0].kind == "pair", "V600E ships as a pair")
+    it = items[0]
+    ok(len(it.wt) == len(it.mut) == 127, "V600E pair is two 127 bp strands")
+    diffs = [i for i, (a, b) in enumerate(zip(it.wt, it.mut)) if a != b]
+    ok(len(diffs) == 1 and it.wt[diffs[0] - 1:diffs[0] + 2] == "GTG"
+       and it.mut[diffs[0] - 1:diffs[0] + 2] == "GAG",
+       "single T>A turns the GTG codon into GAG (c.1799T>A, V600E)")
+    ok(BRAF_FLAT_VS_SLOPED[diffs[0]] == "T", "the changed base is a T")
+
+    win = MainWindow()
+    win._load_example_braf()
+    win._load_example_braf_v600e()
+    app.processEvents()
+    ok(len(win.project.items) == 3, "both examples load together")
+    pair = win.project.items[-1]
+    ok(pair.result and pair.result.get("paired"), "V600E pair computes")
+    ok(pair.mark_idx() == 80, "V600E base is the wt/mut diff at index 80")
+
+    # toggle on/off must work (regression: PySide6 checkState is an enum,
+    # not an int, so bool(int(checkState())) raised on every toggle)
+    n = len(win.chart._datasets)
+    win.list.item(0).setCheckState(Qt.Unchecked)
+    app.processEvents()
+    ok(len(win.chart._datasets) == n - 1,
+       "unticking a row hides that chart")
+    win.list.item(0).setCheckState(Qt.Checked)
+    app.processEvents()
+    ok(len(win.chart._datasets) == n, "re-ticking restores the chart")
+
+
+def test_example_menu_braf_silent_vs_v600e():
+    from varmelt.gui.examples import (_SILENT_SWAP_IDX, braf_silent_swap_items,
+                                      braf_v600e_items)
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    silent = braf_silent_swap_items()[0]
+    v600e = braf_v600e_items()[0]
+    ok(len(silent.wt) == len(silent.mut) == 127, "silent pair is two strands")
+    ok(silent.mut[_SILENT_SWAP_IDX] == "A"
+       and silent.wt[_SILENT_SWAP_IDX] == "T",
+       "silent pair changes T>A exactly at base 28")
+    ok(v600e.mut[80] == "A" and v600e.wt[80] == "T",
+       "V600E is the same T>A transversion, at base 80")
+
+    win = MainWindow()
+    win._load_example_braf_v600e()
+    win._load_example_braf_silent()
+    app.processEvents()
+    ok(len(win.project.items) == 2, "both T>A pairs load together")
+    ev = win.project.items[0].result       # V600E visible
+    es = win.project.items[1].result       # silent (dTm ~ 0)
+    ok(ev and es and ev.get("paired") and es.get("paired"),
+       "both pairs compute")
+    ok(abs(es["delta"]) < 0.001 and es["delta_area"] < 1.0,
+       "the silent T>A barely shifts Tm (|dTm| < 0.001 C, delta-area < 1)")
+    ok(abs(ev["delta"]) > 0.01 and ev["delta_area"] > 5.0,
+       "the same T>A at V600E shifts the curve (delta-area > 5 C*bp)")
+    ok(es["delta_area"] < ev["delta_area"] / 10,
+       "the silent swap is an order of magnitude less visible than V600E")
+
+    # the mutant curve is always drawn red-dashed, and the info panel shows
+    # the changed base in red so the sequence context is visible at a glance
+    from varmelt.gui import plot as plotmod
+    ok(plotmod.MUTANT_COLOR == "#d41a1a", "mutant red is fixed")
+    d = win.chart._datasets[0]
+    ok(d.get("alt_prof") is not None, "pair ships an alt profile")
+    ctx = win._variant_context_html(ev)
+    ok("<font color='#d41a1a'>T\u2192A</font>" in ctx
+       and ctx.endswith("(base 81)"),
+       "context line paints the V600E T->A red at base 81")
+
+
+def test_design_dialog_adds_candidate():
+    from varmelt import design as dmod
+    from varmelt.gui import design as gd
+    from varmelt.gui.examples import BRAF_FLAT_VS_SLOPED
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    wt = BRAF_FLAT_VS_SLOPED
+    mut = wt[:12] + "A" + wt[13:]
+    mk = lambda who, key, score: dmod.Candidate(
+        name=f"{key} — 74 bp fragment, flat/slope ok",
+        chrom=key.split(":")[0], pos=int(key.split(":")[1].split()[0]),
+        rsid="", ref=key.split()[1][0], alt=key.split()[1][2],
+        fp=wt[:20], rp=wt[-20:], ps=0, pe=len(wt) - 1,
+        product_len=len(wt), fragment_len=len(wt) + 42,
+        ft=60.0, rt=61.0, clamp="3'",
+        shape="flat/slope ok", snps_3prime="none",
+        delta_area=12.4, wt_amp=wt, mut_amp=mut, score=score)
+    a = mk(0, "chr7:140453136 G>A", 95)
+    b = mk(1, "chr16:30391275 T>C", 88)
+    seen = {}
+    gd._run_design_sync = lambda specs, base, progress=None, stop=None: (
+        seen.update(specs=specs, base=base) or ([a, b], ["chr1:1 A>C: boom"]))
+
+    win = MainWindow()
+    win._open_design()
+    dlg = win._design_dlg
+    ok(dlg is not None, "Design menu opens the dialog")
+    dlg.specs_edit.setPlainText(
+        "# a batch\nchr7:140453136 G>A\nchr16:30391275 T>Cchr12:8994076 C>A\n"
+        "rs113488022\nchr9:1")
+    specs, errors = dlg._specs()
+    ok(specs[0] == {"chrom": "chr7", "pos": 140453136, "ref": "G",
+                    "alt": "A"}, "chr:pos ref>alt parses to coordinates")
+    ok(specs[1]["chrom"] == "chr16" and specs[1]["pos"] == 30391275
+       and specs[1]["ref"] == "T" and specs[1]["alt"] == "C",
+       "MTHFR-style position parses")
+    ok(len(specs) == 4 and specs[2]
+       == {"chrom": "chr12", "pos": 8994076, "ref": "C", "alt": "A"},
+       "a lost newline in the paste is split back apart")
+    ok(len(errors) == 1 and "chr9:1" in errors[0],
+       "an incomplete position is reported, the rest still design")
+    dlg._on_design()
+    dlg._thread.wait()
+    app.processEvents()
+    ok(len(seen["specs"]) == 4 and seen["base"]["na"] == 0.013,
+       "every valid variant was designed as a batch")
+    ok(dlg.table.rowCount() == 2 and dlg.table.item(0, 0).text().startswith(
+        "chr7"), "candidates sorted best-first, origin labelled")
+    ok("failed" in dlg.status.text() and "chr1:1" in dlg.status.text(),
+       "a per-variant failure shows in the batch status")
+    dlg.table.selectRow(0)
+    app.processEvents()
+    ok(dlg.add_btn.isEnabled(), "Add is enabled once a row is selected")
+    dlg._add_selected()
+    app.processEvents()
+    ok(len(win.project.items) == 1 and win.project.items[0].result
+       and win.project.items[0].result.get("paired"),
+       "Add selected puts the candidate in the project")
+    dlg._add_best_each()
+    app.processEvents()
+    ok(len(win.project.items) == 3,
+       "Add best of each variant appends every variant's top fragment")
+    it = win.project.items[-1]
+    ok(it.clamp_side() == "3'", "the designed clamp side is honoured")
+    ok(len(win.chart._datasets) >= 1, "the fragments are plotted")
+    dlg.close()
+
+
+def test_design_shutdown_stops_running_batch():
+    """Closing the dialog mid-batch must stop the worker, not abort.
+
+    A QThread destroyed while still running aborts the whole process, which is
+    what used to happen when the window was closed during a 15-variant batch.
+    """
+    import threading
+    import time
+
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui import design as gd
+
+    app = QApplication.instance() or QApplication([])
+    seen = {"stopped_at": None, "n": 0}
+
+    def slow_batch(specs, base, progress=None, stop=None):
+        for i, _spec in enumerate(specs, 1):
+            if stop is not None and stop():
+                seen["stopped_at"] = i
+                return [], ["stopped"]
+            seen["n"] = i
+            time.sleep(0.2)              # stand-in for a slow variant
+        return [], []
+
+    real, gd._run_design_sync = gd._run_design_sync, slow_batch
+    try:
+        dlg = gd.DesignDialog()
+        dlg.specs_edit.setPlainText(
+            "\n".join(f"chr{i + 1}:3000 T>C" for i in range(15)))
+        dlg._on_design()
+        thread = dlg._thread
+        ok(thread is not None and thread.isRunning(),
+           "a 15-variant batch starts a worker thread")
+        time.sleep(0.3)                  # let the first variant get going
+        stopped = dlg.shutdown()
+        ok(stopped, "shutdown() reports the worker stopped")
+        ok(not thread.isRunning(), "the worker thread is no longer running")
+        ok(dlg._thread is None, "the dialog drops its thread reference")
+        ok(seen["stopped_at"] is not None,
+           "the worker was told to stop instead of running the whole batch")
+        ok(seen["n"] < 15, "the batch ended early")
+        # A second shutdown must be harmless (close-after-close).
+        ok(dlg.shutdown(), "a second shutdown() is a no-op")
+        dlg.close()
+    finally:
+        gd._run_design_sync = real
+
+
+def test_design_import_list():
+    """Import-list appends the file's variants into the dialog box."""
+    from PySide6.QtWidgets import QApplication, QFileDialog
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as d:
+        lst = os.path.join(d, "ops.csv")
+        with open(lst, "w", newline="") as fh:
+            fh.write("CHROM,POS,REF,ALT\r\n7,140453136,T,A\r\n"
+                     "16,30391275,G,A\r\n")
+        orig = QFileDialog.getOpenFileName
+        QFileDialog.getOpenFileName = staticmethod(
+            lambda *a, **k: (lst, "Variant lists (*.ods *.xlsx *.csv)"))
+        win = MainWindow()
+        win._open_design()
+        dlg = win._design_dlg
+        try:
+            dlg._on_import()
+            text = dlg.specs_edit.toPlainText()
+            ok("chr7:140453136 T>A" in text and "chr16:30391275 G>A" in text
+               and "imported 2 variant(s)" in dlg.status.text(),
+               "Import-list reads a Windows CSV into the box")
+        finally:
+            QFileDialog.getOpenFileName = orig
+        dlg.close()
+
+
+def test_design_multi_select_add():
+    """Ctrl/Shift multi-selection adds every chosen candidate at once."""
+    from PySide6.QtCore import QItemSelectionModel, Qt
+    from PySide6.QtWidgets import QApplication, QTableWidgetItem
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+
+    def mk(i):
+        return type("C", (), {
+            "name": f"c{i}", "chrom": "chr7" if not i else "chr16",
+            "pos": 140453136 if not i else 30391275, "rsid": None,
+            "ref": "T", "alt": "A", "fp": "FP", "rp": "RP", "ps": 0, "pe": 1,
+            "wt_amp": "ACGT" * 30,
+            "mut_amp": "ACGT" * 29 + "TGCA", "ft": 60.0,
+            "rt": 61.0, "clamp": "5'", "shape": "ok", "snps_3prime": "none",
+            "delta_area": 12.4, "score": 95 - i})()
+
+    win = MainWindow()
+    win._open_design()
+    dlg = win._design_dlg
+    dlg._cands = [mk(0), mk(1), mk(2)]
+    dlg.table.setRowCount(3)
+    for r, c in enumerate(dlg._cands):
+        cell = QTableWidgetItem(c.name)
+        cell.setData(Qt.UserRole, r)
+        dlg.table.setItem(r, 0, cell)
+    sm = dlg.table.selectionModel()
+    model = dlg.table.model()
+    for row in (0, 2):
+        sm.select(model.index(row, 0),
+                  QItemSelectionModel.Select | QItemSelectionModel.Rows)
+    app.processEvents()
+    ok(dlg.add_btn.isEnabled()
+       and len(dlg.table.selectionModel().selectedRows()) == 2,
+       "Add enabled for a Ctrl multi-selection")
+    n = [0]
+    dlg.candidates.connect(lambda cands: n.__setitem__(0, len(cands)))
+    dlg._add_selected()
+    ok(n[0] == 2, "Add selected emits the two chosen candidates")
+    dlg.close()
+
+
+def test_design_large_batch_adds_untoggled():
+    """Batches >15 add fragment info but leave the graphs un-toggled."""
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+
+    def mk(i):
+        return type("C", (), {
+            "name": f"v{i}", "chrom": "chr7", "pos": 1000 + i, "rsid": None,
+            "ref": "T", "alt": "A", "fp": "FP", "rp": "RP", "ps": 0, "pe": 1,
+            "wt_amp": "ACGT" * 30,
+            "mut_amp": "ACGT" * 29 + "TGCA", "ft": 60.0,
+            "rt": 61.0, "clamp": "5'", "shape": "ok", "snps_3prime": "none",
+            "delta_area": 10.0 + i, "score": 90})()
+    win = MainWindow()
+    win._open_design()
+    dlg = win._design_dlg
+    cands = [mk(i) for i in range(16)]          # 16 > MAX_AUTO_PLOTTED_BATCH
+    win._add_designed_many(cands)
+    app.processEvents()
+    ok(len(win.project.items) == 16, "all 16 fragments were added")
+    ok(all(not it.plot for it in win.project.items),
+       "large-batch fragments arrive with graphs off")
+    ok(win.table.rowCount() == 16,
+       "the primer/fragment table is populated for the batch")
+    dlg.close()
+
+
+def test_design_sorted_selection_maps_to_candidates():
+    """Sorting the table does not break which candidate Add resolves."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QTableWidgetItem
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+
+    def mk(score):
+        return type("C", (), {
+            "name": f"c{score}", "chrom": "chr7", "pos": 1000, "rsid": None,
+            "ref": "T", "alt": "A", "fp": "FP", "rp": "RP", "ps": 0, "pe": 1,
+            "wt_amp": "ACGT" * 30,
+            "mut_amp": "ACGT" * 29 + "TGCA", "ft": 60.0,
+            "rt": 61.0, "clamp": "5'", "shape": "ok", "snps_3prime": "none",
+            "delta_area": 12.4, "score": score})()
+    win = MainWindow()
+    win._open_design()
+    dlg = win._design_dlg
+    dlg._cands = [mk(90), mk(80), mk(95)]
+    dlg.table.setRowCount(3)
+    for r, c in enumerate(dlg._cands):
+        cell = QTableWidgetItem(c.name)
+        cell.setData(Qt.UserRole + 1, r)
+        dlg.table.setItem(r, 0, cell)
+    dlg.table.setItem(2, 2, QTableWidgetItem("120 bp"))   # a length cell
+    # visual reorder: sort the Fragment column ascending -> 120 bp last? no,
+    # ascending puts 120 bp first; verify the empty cells sort as blanks
+    dlg.table.setSortingEnabled(True)
+    dlg.table.sortItems(2, Qt.AscendingOrder)
+    app.processEvents()
+    first = dlg.table.item(0, 0).text()
+    # whichever row is on top, the stored role must resolve to a candidate
+    ok(dlg._candidate_at_row(0) is not None, "sorted row still maps to candidate")
+    ok(dlg._candidate_at_row(2) is not None, "last sorted row maps too")
+    dlg.close()
+
+
+def test_design_save_load_candidates_roundtrip():
+    """A saved candidate batch can be reloaded without re-running design."""
+    import dataclasses
+    from PySide6.QtWidgets import QApplication
+    from varmelt.design import Candidate
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+
+    def mk(score):
+        return Candidate(name=f"c{score}", chrom="chr16", pos=30391275,
+                         rsid="", ref="T", alt="C", fp="FP", rp="RP",
+                         ps=0, pe=1, product_len=120, fragment_len=130,
+                         ft=60.0, rt=61.0, clamp="5'", shape="flat/slope ok",
+                         snps_3prime="none", delta_area=12.4,
+                         wt_amp="ACGT" * 30, mut_amp="ACGT" * 29 + "TGCA",
+                         score=score)
+    win = MainWindow()
+    win._open_design()
+    dlg = win._design_dlg
+    for c in (mk(95), mk(80), mk(90)):
+        c.genome = "hg19"
+    dlg._show_candidates([mk(95), mk(80), mk(90)])
+    for c in dlg._cands:
+        c.genome = "hg19"
+    payload = dlg._candidate_payload()
+    ok(len(payload) == 3 and all(p["genome"] == "hg19" for p in payload),
+       "payload carries every candidate with its genome build")
+    keys = frozenset(f.name for f in dataclasses.fields(Candidate))
+    back = []
+    for raw in payload:
+        c = Candidate(**{k: raw[k] for k in raw if k in keys})
+        if raw.get("genome"):
+            c.genome = raw["genome"]
+        back.append(c)
+    dlg._show_candidates(back)
+    app.processEvents()
+    ok(dlg.table.rowCount() == 3, "reloaded list repopulates the table")
+    ok(all(getattr(c, "genome", None) == "hg19" for c in dlg._cands),
+       "genome survives the save/load round-trip")
+    ok(dlg.save_btn.isEnabled() and dlg.add_best_btn.isEnabled(),
+       "save/add enabled for the reloaded batch")
+    dlg.close()
+
+
+def test_tiling_circular_wrap_row_is_visible():
+    """A circular walk shows the seam fragment folding back over base 1."""
+    import random
+    from PySide6.QtWidgets import QApplication
+    from varmelt import tiling
+    from varmelt.gui.main import MainWindow
+
+    global failures
+    random.seed(7)
+    app = QApplication.instance() or QApplication([])
+    seq = "".join(random.choice("ACGT") for _ in range(1240))
+    win = MainWindow()
+    win._open_tiling()
+    dlg = win._tiling_dlg
+    dlg.paste_edit.setPlainText(seq)
+    dlg.circular_chk.setChecked(True)
+    dlg._on_design()
+    dlg._thread.wait()
+    app.processEvents()
+    ok(dlg.circular_chk.isChecked(), "circular DNA box was ticked")
+    wraps = [f for f in dlg._frags if f.wraps]
+    ok(wraps and wraps[-1].end > len(seq),
+       "the seam fragment wraps past the origin")
+    last = wraps[-1]
+    ok(last.end - len(seq) >= dlg.overlap_spin.value(),
+       "seam overlap at least the configured overlap span")
+    rows = tiling.fragment_rows(dlg._frags)
+    ok(any(r[0] == last.start and r[1] == last.end_wrapped
+           and "wraps origin" in r[5] for r in rows),
+       "the table shows the seam fragment folding back over base 1")
+    win._add_tiling_fragments([last])
+    win._tiling_add_thread.wait()
+    app.processEvents()
+    ok(any("wraps origin" in it.name for it in win.project.items),
+       "the added item name marks the seam fragment as wrapping")
+    dlg.close()
+
+
+def test_tiling_dialog_designs_and_adds():
+    """The tiling dialog designs a walk and emits addable fragments."""
+    import random
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+    from varmelt.gui.tiling import TilingDialog
+
+    global failures
+    random.seed(5)
+    app = QApplication.instance() or QApplication([])
+    seq = "".join(random.choice("ACGT") for _ in range(900))
+    win = MainWindow()
+    win._open_tiling()
+    dlg = win._tiling_dlg
+    ok(isinstance(dlg, TilingDialog), "Tiling menu opens the dialog")
+    win._open_tiling()
+    ok(win._tiling_dlg is dlg, "a second open reuses the dialog instance")
+    dlg.paste_edit.setPlainText(f">test\n{seq}")
+    dlg._on_design()
+    dlg._thread.wait()
+    app.processEvents()
+    ok(bool(dlg._frags), "the walk designed fragments")
+    ok(dlg.table.rowCount() == len(dlg._frags),
+       "every fragment shows in the results table")
+    ok(dlg._frags[-1].end == len(seq), "walk reaches the template end")
+    ok(dlg.add_all_btn.isEnabled() and dlg.csv_btn.isEnabled(),
+       "Add-all and CSV enable once designed")
+    n0 = len(win.project.items)
+    win._add_tiling_fragments(list(dlg._frags))
+    win._tiling_add_thread.wait()
+    app.processEvents()
+    new = win.project.items[n0:]
+    ok(len(new) == len(dlg._frags), "Add-all appends every fragment")
+    ok(all(not it.error for it in new), "tiling items compute without error")
+    ok(all(it.kind == "seq" for it in new), "tiling items are plain amplicons")
+    ok(all(it.plot for it in new), "a normal walk adds with graphs on")
+    ok(all(f"tile {f.start}-{f.end}" in it.name
+           for f, it in zip(dlg._frags, new)),
+       "fragment names carry their template coordinates")
+    dlg.close()
+
+
+def test_tiling_large_walk_adds_graphs_off():
+    """A long template (>15 fragments) is added without flooding the chart."""
+    import random
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+
+    random.seed(13)
+    app = QApplication.instance() or QApplication([])
+    seq = "".join(random.choice("ACGT") for _ in range(3200))
+    win = MainWindow()
+    win._open_tiling()
+    dlg = win._tiling_dlg
+    dlg.paste_edit.setPlainText(seq)
+    dlg._on_design()
+    dlg._thread.wait()
+    app.processEvents()
+    ok(len(dlg._frags) > 15, "a 3.2 kb walk yields a large fragment batch")
+    win._add_tiling_fragments(list(dlg._frags))
+    win._tiling_add_thread.wait()
+    app.processEvents()
+    new = win.project.items[len(win.project.items) - len(dlg._frags):]
+    ok(all(not it.plot for it in new),
+       "large-batch fragments arrive with graphs off")
+    ok(all(not it.error for it in new), "large batch computes without error")
+    dlg.close()
+
+
+def test_clear_button_empties_project():
+    """Clear removes every amplicon in one click and resets the counter."""
+    from PySide6.QtWidgets import QApplication, QLabel
+    from varmelt.gui.main import MainWindow
+
+    global failures
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    for i in range(3):
+        win.project.add(Item(kind="seq", name=f"f{i}", seq=SEQ + f"ACGT{i}",
+                             clamp="5'"))
+    win._refresh_list()
+    ok(win._clear_button.isEnabled(),
+       "Clear is enabled once amplicons exist")
+    win._clear_items()
+    app.processEvents()
+    ok(len(win.project.items) == 0, "Clear empties the project");
+    ok(win.list.count() == 0, "Clear empties the amplicon list")
+    title = win.findChild(QLabel, "listTitle")
+    ok(title is not None and "(0)" in title.text(),
+       "amplicon counter resets to zero")
+    ok(not win._clear_button.isEnabled(),
+       "Clear disables itself for an empty project")
+
+
+def test_list_numbering_filter_and_table_link():
+    """Amplicon list is numbered, filterable by name, and linked to the
+    primer table via a shared # (selecting a list row highlights its table
+    row; double-clicking a table row jumps back to the list)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    names = ["chr14:99183681 C>A", "BRAF V600E", "tile 1-158"]
+    for n in names:
+        win.project.add(Item(kind="seq", name=n, seq=SEQ, clamp="5'"))
+    for it in win.project.items:
+        it.compute(win.project.na)
+    win._refresh_list()
+    win._render_table()
+
+    ok(win.list.count() == 3, "three amplicons listed")
+    ok(win.list.item(0).text().startswith("1.")
+       and "chr14:99183681 C>A" in win.list.item(0).text(),
+       "first list row carries its shared # and name")
+    ok(win.list.item(2).text().startswith("3."), "third list row is #3")
+    ok(win.table.rowCount() == 3, "computed amplicons all in the table")
+    ok(win.table.item(2, 0).text() == "3"
+       and "tile 1-158" in win.table.item(2, 1).text(),
+       "table # matches the list # for the third amplicon")
+
+    win.filter_edit.setText("chr14")
+    app.processEvents()
+    hidden = [r for r in range(win.list.count())
+              if win.list.item(r).isHidden()]
+    ok(hidden == [1, 2], "name filter shows only the chr14 amplicon")
+    win.filter_edit.clear()
+    app.processEvents()
+    ok(not any(win.list.item(r).isHidden() for r in range(3)),
+       "clearing the filter restores every row")
+
+    win.list.setCurrentRow(2)
+    app.processEvents()
+    sel = win.table.selectedItems()
+    ok(sel and win.table.item(sel[0].row(), 0).text() == "3",
+       "selecting a list row highlights its # 3 table row")
+
+    win.list.setCurrentRow(0)
+    app.processEvents()
+    win._on_table_row_activated(win.table.item(1, 0))
+    app.processEvents()
+    ok(win.list.currentRow() == 1 and "BRAF V600E"
+       in win.list.currentItem().text(),
+       "double-clicking a table row jumps to that amplicon in the list")
+
+
+def test_settings_dialog_roundtrip():
+    """The Settings dialog persists Primer3 + melting-model values, and
+    Reset-to-defaults restores and stores the development defaults."""
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui import app_settings as as_
+
+    app = QApplication.instance() or QApplication([])
+    as_.set_values(**as_.DEFAULTS)
+    ok(as_.current() == as_.DEFAULTS, "fresh settings match the defaults")
+
+    dlg = as_.SettingsDialog()
+    dlg._spins["tm_opt"][0].setValue(58.0)
+    dlg._spins["tm_min"][0].setValue(48.0)
+    dlg._spins["tm_max"][0].setValue(65.0)
+    dlg._spins["na"][0].setValue(0.02)
+    dlg._spins["max_frag"][0].setValue(300)
+    dlg._on_ok()
+    after = as_.current()
+    ok(after["tm_opt"] == 58.0 and after["tm_min"] == 48.0
+       and after["tm_max"] == 65.0, "primer Tm range persists from the dialog")
+    ok(after["na"] == 0.02 and after["max_frag"] == 300,
+       "melting-map defaults persist from the dialog")
+
+    dlg2 = as_.SettingsDialog()
+    dlg2._load_defaults()
+    dlg2._on_ok()
+    ok(as_.current() == as_.DEFAULTS,
+       "reset-to-defaults restores and stores the defaults")
+
+    # restore defaults so later tests see a clean store
+    as_.set_values(**as_.DEFAULTS)
+
+
+def test_design_dialog_uses_settings():
+    """Settings feed the main-window Na+ default and the design dialog's
+    Primer3 parameters, which it passes into design_variant."""
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui import app_settings as as_
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    as_.set_values(na=0.02, max_frag=300, tm_opt=58.0, tm_min=48.0,
+                   tm_max=65.0, size_opt=21, size_min=19, size_max=25,
+                   salt_mm=75.0)
+
+    win = MainWindow()
+    ok(abs(win.na_spin.value() - 0.02) < 1e-6,
+       "main-window Na+ default follows the setting")
+
+    win._open_design()
+    dlg = win._design_dlg
+    ok(abs(dlg.na_spin.value() - 0.02) < 1e-6
+       and dlg.maxfrag_spin.value() == 300,
+       "design dialog inherits Na+ and fragment-length settings")
+    base = dlg._base()
+    ok(base["opt_tm"] == 58.0 and base["min_tm"] == 48.0
+       and base["max_tm"] == 65.0,
+       "design dialog passes the annealing-Tm range to the engine")
+    ok(base["opt_size"] == 21 and base["min_size"] == 19
+       and base["max_size"] == 25 and base["salt_mm"] == 75.0,
+       "design dialog passes primer length + salt to the engine")
+
+    win._open_tiling()
+    tdlg = win._tiling_dlg
+    ok(abs(tdlg.na_spin.value() - 0.02) < 1e-6,
+       "tiling dialog inherits the Na+ setting")
+
+    as_.set_values(**as_.DEFAULTS)
+
+
+if __name__ == "__main__":
+    test_model_compute_roundtrip()
+    test_project_schema()
+    test_edit_duplicate_delete()
+    test_edit_field_bare_headers()
+    test_chart_renders_png()
+    test_clamp_anchor_indel()
+    test_example_menu_braf_flat_vs_sloped()
+    test_example_menu_braf_v600e_and_toggle()
+    test_example_menu_braf_silent_vs_v600e()
+    test_design_dialog_adds_candidate()
+    test_design_shutdown_stops_running_batch()
+    test_design_import_list()
+    test_design_multi_select_add()
+    test_design_large_batch_adds_untoggled()
+    test_design_sorted_selection_maps_to_candidates()
+    test_design_save_load_candidates_roundtrip()
+    test_tiling_dialog_designs_and_adds()
+    test_tiling_circular_wrap_row_is_visible()
+    test_tiling_large_walk_adds_graphs_off()
+    test_clear_button_empties_project()
+    test_settings_dialog_roundtrip()
+    test_design_dialog_uses_settings()
+    test_list_numbering_filter_and_table_link()
+    test_buttons_and_table()
+    print("\n" + ("ALL GUI TESTS PASSED" if failures == 0
+                  else f"{failures} FAILURE(S)"))
+    sys.exit(1 if failures else 0)
