@@ -69,6 +69,34 @@ _PRODUCT_RANGES = [
     (160, _P3_PRODUCT_CAP),
 ]
 
+MIN_FRAG_LENGTH = 100        # default lower bound of the physical fragment
+MIN_AMPLICON = 70            # shortest amplicon searched (as before)
+
+
+def product_windows(min_frag: int = 0, max_frag: int = MAX_FRAG_LENGTH,
+                    clamp_len: int = _CLAMP_LEN, step: int = 10):
+    """Primer3 product-size windows for a wanted *physical fragment* range.
+
+    The fragment is the amplicon plus the GC clamp, so the amplicon must lie
+    in ``[min_frag - clamp, max_frag - clamp]``.  Primer3 is run once per
+    10-bp window across that range (amplicons of at least 70 bp, as
+    before), so every length up to the maximum can be reached -- the old
+    fixed windows stopped at a 175-bp amplicon whatever the maximum was.
+    """
+    amp_hi = int(max_frag) - int(clamp_len)
+    amp_lo = max(MIN_AMPLICON, int(min_frag) - int(clamp_len))
+    if amp_hi < amp_lo:
+        return []
+    out, lo = [], amp_lo
+    while lo < amp_hi:
+        hi = min(lo + step, amp_hi)
+        a, b = max(lo, amp_lo), hi
+        if b >= a and b > amp_lo:
+            out.append((a, b))
+        lo = hi
+    return out
+
+
 PRIMER_OPT_TM = 60.0
 PRIMER_MIN_TM = 46.0
 PRIMER_MAX_TM = 67.0
@@ -172,6 +200,7 @@ def _global_args(salt_mm: float = 50.0) -> dict:
 
 def design(seq: str, chrom: str = "", var_pos: int = None,
            ranges=None, max_frag: int = MAX_FRAG_LENGTH,
+           min_frag: int = 0,
            na: float = 0.013, opt_tm: float = PRIMER_OPT_TM,
            min_tm: float = PRIMER_MIN_TM,
            max_tm: float = PRIMER_MAX_TM,
@@ -189,9 +218,10 @@ def design(seq: str, chrom: str = "", var_pos: int = None,
     still avoids it is dropped, since the melting difference at that base is
     the entire point of the analysis.
 
-    Pairs whose physical fragment (amplicon plus the GC-clamp oligo) would
-    exceed *max_frag* base pairs are discarded — CTCE loses separation on
-    long fragments.  Every designed fragment carries the GC-clamp tail
+    Pairs whose physical fragment (amplicon plus the GC-clamp oligo) falls
+    outside ``[min_frag, max_frag]`` base pairs are discarded — CTCE loses
+    separation on long fragments, and the user may want a given size
+    range.  Every designed fragment carries the GC-clamp tail
     (the clamp oligo is part of the physical PCR product even when the
     amplicon does not span the variant base).  The clamp side is chosen by
     attaching the clamp to *both* fragment ends and keeping the side whose
@@ -202,7 +232,7 @@ def design(seq: str, chrom: str = "", var_pos: int = None,
     binding sites can be found in AT-rich regions.
     """
     if ranges is None:
-        ranges = _PRODUCT_RANGES
+        ranges = product_windows(min_frag, max_frag)
 
     out: List[PrimerResult] = []
     cap = max_frag - len(GC_CLAMP)
@@ -254,7 +284,7 @@ def design(seq: str, chrom: str = "", var_pos: int = None,
             # oligo if one is attached).  CTCE loses separation on long
             # fragments.
             frag_len = pl + (len(GC_CLAMP) if clamp else 0)
-            if frag_len > max_frag:
+            if frag_len > max_frag or frag_len < min_frag:
                 continue
             out.append(PrimerResult(chrom, f"{chrom}:{lo}-{hi}",
                                     ps, pe, ft, rt, pl,
@@ -484,7 +514,8 @@ def _revcomp(seq: str) -> str:
 
 def design_fallback(seq: str, chrom: str, var_pos: int, na: float = 0.013,
                     spacings=(20, 40, 60),
-                    max_frag: int = MAX_FRAG_LENGTH) -> List[PrimerResult]:
+                    max_frag: int = MAX_FRAG_LENGTH,
+                    min_frag: int = 0) -> List[PrimerResult]:
     """Manual 20-mer primer pairs flanking *var_pos*, used when Primer3 finds
     nothing.
 
@@ -518,7 +549,7 @@ def design_fallback(seq: str, chrom: str, var_pos: int, na: float = 0.013,
         if dip is not None and dip["has_dip"]:
             continue                          # no dip may survive the clamp
         frag_len = pl + (len(GC_CLAMP) if clamp else 0)
-        if frag_len > max_frag:
+        if frag_len > max_frag or frag_len < min_frag:
             continue
         ft = reference.melting_temp(fp, Na=na)
         rt = reference.melting_temp(rp, Na=na)

@@ -158,7 +158,8 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
                  gc_tail: str = MAMA_GC_TAIL,
                  extra_mm_positions=(2,),
                  min_product: int = 60,
-                 max_product: int = 220,
+                 max_product: int = 250,
+                 min_frag: int = 0,
                  max_frag: int = pr.MAX_FRAG_LENGTH,
                  do_inpcr: bool = True,
                  label_tail: bool = True) -> DesignResult:
@@ -166,7 +167,12 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
 
     With *label_tail* (default) the common primer carries *gc_tail* on its
     5' end as the landing site for a labelling primer; with
-    ``label_tail=False`` the common primer is the plain genomic sequence.  SNPs follow Cha et al. 1992 (3' allele base plus one
+    ``label_tail=False`` the common primer is the plain genomic sequence.
+    *min_product*/*max_product* bound the length of the PCR products as the
+    capillary sees them -- genomic amplicon plus the labelling tail -- and
+    apply to both the WT and the MUT product (they differ for indels).
+
+    SNPs follow Cha et al. 1992 (3' allele base plus one
     penultimate mismatch on each allele-specific primer; equal-length
     amplicons).  Deletions share a 5'
     start, with WT 3-5 bp into the deleted stretch and MUT 3-5 bp beyond
@@ -174,7 +180,7 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
     :class:`DesignResult` whose candidates have a ``.mama``
     :class:`MamaCandidate`.
     """
-    del salt_mm, with_dbsnp, max_frag, opt_size, min_size, max_size
+    del salt_mm, with_dbsnp, max_frag, min_frag, opt_size, min_size, max_size
     ref_tmp, alt_tmp = _allele(ref), _allele(alt)
     if max(len(ref_tmp), len(alt_tmp)) > 1:
         window = max(int(window),
@@ -583,10 +589,12 @@ def _with_common(ori, wt_as, mut_as, wt_3p, mut_3p, refseq, altseq,
         return None
     tm_target = 0.5 * (_approx_tm(wt_as) + _approx_tm(mut_as))
     tail_rc = pr._revcomp(gc_tail)
+    d_len = len(ref) - len(alt)            # MUT product is d_len shorter
     if ori == "forward":
         lo = max(wt_3p, mut_3p, idx + max(len(ref), 1)) + 1
-        hit = _scan_reverse(refseq, lo, len(refseq), tm_target,
-                            min_product, max_product)
+        pe_lo, pe_hi = _end_window(wt_3p - len(wt_as) + 1, len(gc_tail),
+                                   d_len, min_product, max_product)
+        hit = _scan_reverse(refseq, lo, pe_lo, pe_hi, tm_target)
         if hit is None:
             return None
         bind, rp_start, rp_end = hit
@@ -601,7 +609,9 @@ def _with_common(ori, wt_as, mut_as, wt_3p, mut_3p, refseq, altseq,
         mut_fwd, mut_rev = mut_as, common_primer
     else:
         hi = min(wt_3p, mut_3p, idx)
-        hit = _scan_forward(refseq, 0, hi, tm_target, min_product, max_product)
+        ps_lo, ps_hi = _start_window(wt_3p + len(wt_as) - 1, len(gc_tail),
+                                     d_len, min_product, max_product)
+        hit = _scan_forward(refseq, hi, ps_lo, ps_hi, tm_target)
         if hit is None:
             return None
         bind, fp_start, fp_end = hit
@@ -616,7 +626,8 @@ def _with_common(ori, wt_as, mut_as, wt_3p, mut_3p, refseq, altseq,
 
     if len(wt_amp) < 40 or len(mut_amp) < 40:
         return None
-    if not (min_product <= len(wt_amp) <= max_product + len(gc_tail) + 8):
+    if not all(min_product <= n <= max_product
+               for n in (len(wt_amp), len(mut_amp))):
         return None
     dt = abs(_approx_tm(wt_amp) - _approx_tm(mut_amp))
     info = MamaInfo(
@@ -641,11 +652,30 @@ def _with_common(ori, wt_as, mut_as, wt_3p, mut_3p, refseq, altseq,
     return assay
 
 
-def _scan_reverse(seq, lo, hi, tm_target, min_product, max_product):
+def _end_window(wt_start, tail_len, d_len, min_product, max_product):
+    """Allowed 3' end (inclusive) of a downstream common primer so that both
+    products -- WT ``end - wt_start + 1 + tail`` and MUT ``d_len`` shorter --
+    fall in ``[min_product, max_product]``."""
+    base = wt_start - 1 - tail_len
+    return (base + min_product + max(0, d_len),
+            base + max_product + min(0, d_len))
+
+
+def _start_window(end, tail_len, d_len, min_product, max_product):
+    """Allowed 5' start of an upstream common primer (same rule as
+    :func:`_end_window`, for the reverse orientation)."""
+    top = end + 1 + tail_len
+    return (top - (max_product + min(0, d_len)),
+            top - (min_product + max(0, d_len)))
+
+
+def _scan_reverse(seq, lo, pe_lo, pe_hi, tm_target):
+    """Best downstream common primer: binding site starts at or after *lo*,
+    ends in ``[pe_lo, pe_hi]``; closest Tm to *tm_target* wins."""
     best = None
     best_d = 1e9
     lo = max(0, lo)
-    for pe in range(lo + min_product - 1, min(hi, lo + max_product)):
+    for pe in range(max(pe_lo, lo), min(pe_hi, len(seq) - 1) + 1):
         for length in _COMMON_LENS:
             ps = pe - length + 1
             if ps < lo:
@@ -660,11 +690,13 @@ def _scan_reverse(seq, lo, hi, tm_target, min_product, max_product):
     return best
 
 
-def _scan_forward(seq, lo, hi, tm_target, min_product, max_product):
+def _scan_forward(seq, hi, ps_lo, ps_hi, tm_target):
+    """Best upstream common primer: starts in ``[ps_lo, ps_hi]``, binding
+    site ends before *hi*; closest Tm to *tm_target* wins."""
     best = None
     best_d = 1e9
     hi = min(hi, len(seq))
-    for ps in range(max(0, hi - max_product), max(0, hi - min_product + 1)):
+    for ps in range(max(0, ps_lo), ps_hi + 1):
         for length in _COMMON_LENS:
             pe = ps + length - 1
             if pe >= hi:

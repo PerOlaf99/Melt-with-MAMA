@@ -229,6 +229,7 @@ def design_variant(rsid: Optional[str] = None, chrom: str = "ref",
                    genome: str = "hg38", window: int = WINDOW_DEFAULT,
                    local_2bit: Optional[str] = None,
                    ranges=None, max_frag: int = pr.MAX_FRAG_LENGTH,
+                   min_frag: int = 0,
                    na: float = 0.013,
                    opt_tm: float = pr.PRIMER_OPT_TM,
                    min_tm: float = pr.PRIMER_MIN_TM,
@@ -295,14 +296,15 @@ def design_variant(rsid: Optional[str] = None, chrom: str = "ref",
     alt_prof = refmod.calc_tm_profile(altseq, Na=na)
 
     pairs = pr.design(refseq, chrom=chrom_n, var_pos=idx, ranges=ranges,
-                      na=na, max_frag=max_frag, opt_tm=opt_tm,
+                      na=na, max_frag=max_frag, min_frag=min_frag,
+                      opt_tm=opt_tm,
                       min_tm=min_tm, max_tm=max_tm,
                       opt_size=opt_size, min_size=min_size,
                       max_size=max_size, salt_mm=salt_mm)
     fallback = not pairs
     if fallback:
         pairs = pr.design_fallback(refseq, chrom_n, idx, na=na,
-                                   max_frag=max_frag)
+                                   max_frag=max_frag, min_frag=min_frag)
 
     plans = _snp_plans(a, chrom_n, start, pairs, with_dbsnp) if pairs else []
     for it in pairs:
@@ -324,7 +326,9 @@ def design_variant(rsid: Optional[str] = None, chrom: str = "ref",
     note = "fallback fixed-end design (Primer3 found no pair)" if fallback \
         else ""
     if not cands:
-        note = (note + "; " if note else "") + "no fragment spans the variant"
+        note = (note + "; " if note else "") + (
+            f"no fragment of {min_frag}-{max_frag} bp spans the variant"
+            if min_frag else "no fragment spans the variant")
     return DesignResult(cands, chrom_n, pos, ref, alt, rsid, a, start, end,
                         fallback, note=note)
 

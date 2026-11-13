@@ -253,10 +253,34 @@ class DesignDialog(QDialog):
         self.na_spin.setSingleStep(0.001)
         self.na_spin.setValue(0.013)
         form.addRow("Na+ (M)", self.na_spin)
-        # Fragment design only: CTCE fragment length cap.
+        # Fragment length range, both modes: the physical product the
+        # capillary sees (CTCE: amplicon + GC clamp; MAMA: amplicon + tail).
+        self.minfrag_spin = QSpinBox()
+        self.minfrag_spin.setRange(40, 1000)
+        self.minfrag_spin.setSingleStep(10)
         self.maxfrag_spin = QSpinBox()
-        self.maxfrag_spin.setRange(100, 500)
-        self.maxfrag_spin.setValue(240)
+        self.maxfrag_spin.setRange(60, 1000)
+        self.maxfrag_spin.setSingleStep(10)
+        self.minfrag_spin.setValue(60 if self._mama else 100)
+        self.maxfrag_spin.setValue(250 if self._mama else 240)
+        range_row = QHBoxLayout()
+        range_row.addWidget(self.minfrag_spin)
+        range_row.addWidget(QLabel("\u2013"))
+        range_row.addWidget(self.maxfrag_spin)
+        range_note = QLabel(
+            "incl. labelling tail" if self._mama
+            else "incl. 42-bp GC clamp")
+        range_note.setStyleSheet("color:#555;")
+        range_row.addWidget(range_note)
+        range_row.addStretch(1)
+        for w in (self.minfrag_spin, self.maxfrag_spin):
+            w.setToolTip(
+                "Length of the PCR products as the capillary sees them: "
+                + ("genomic amplicon plus the 5\u2032 labelling tail (when "
+                   "ON); applies to both the WT and the MUT product."
+                   if self._mama else
+                   "amplicon plus the GC clamp.  Shortest amplicon searched "
+                   "is 70 bp."))
         # MAMA only: optional 5' labelling tail on the common primer.
         # A checkable button with a clear border and an explicit ON/OFF
         # label reads better than a small checkbox on every theme.
@@ -281,12 +305,11 @@ class DesignDialog(QDialog):
         self.tail_hint.setStyleSheet("color:#555;")
         tail_row.addWidget(self.tail_hint)
         tail_row.addStretch(1)
+        form.addRow("Fragment length (bp)", range_row)
         if self._mama:
             form.addRow("Labelling tail", tail_row)
             form.addRow("Tail sequence", self.gc_tail_edit)
-            self.maxfrag_spin.hide()
         else:
-            form.addRow("Max fragment (bp)", self.maxfrag_spin)
             self.tail_box.hide()
             self.tail_hint.hide()
             self.gc_tail_edit.hide()
@@ -464,9 +487,12 @@ class DesignDialog(QDialog):
         self.na_spin.blockSignals(True)
         self.na_spin.setValue(cfg["na"])
         self.na_spin.blockSignals(False)
-        self.maxfrag_spin.blockSignals(True)
-        self.maxfrag_spin.setValue(cfg["max_frag"])
-        self.maxfrag_spin.blockSignals(False)
+        lo, hi = ((cfg["mama_min"], cfg["mama_max"]) if self._mama
+                  else (cfg["min_frag"], cfg["max_frag"]))
+        for w, v in ((self.minfrag_spin, lo), (self.maxfrag_spin, hi)):
+            w.blockSignals(True)
+            w.setValue(int(v))
+            w.blockSignals(False)
         self._primer_tm = (cfg["tm_opt"], cfg["tm_min"], cfg["tm_max"])
         self._primer_size = (cfg["size_opt"], cfg["size_min"],
                              cfg["size_max"])
@@ -475,7 +501,10 @@ class DesignDialog(QDialog):
     def _base(self) -> dict:
         return {"genome": self._genome_name(),
                 "na": self.na_spin.value(),
-                "max_frag": self.maxfrag_spin.value(),
+                **({"min_product": self.minfrag_spin.value(),
+                    "max_product": self.maxfrag_spin.value()} if self._mama
+                   else {"min_frag": self.minfrag_spin.value(),
+                         "max_frag": self.maxfrag_spin.value()}),
                 "opt_tm": self._primer_tm[0],
                 "min_tm": self._primer_tm[1],
                 "max_tm": self._primer_tm[2],
@@ -498,6 +527,10 @@ class DesignDialog(QDialog):
         except ValueError:
             self.status.setText('<font color="#a00">type a genome build, '
                                 'e.g. hg38, mm39 or rn6</font>')
+            return
+        if self.minfrag_spin.value() > self.maxfrag_spin.value():
+            self.status.setText('<font color="#a00">fragment length: the '
+                                'minimum is larger than the maximum</font>')
             return
         specs, errors = self._specs()
         if not specs:
@@ -753,8 +786,12 @@ class DesignDialog(QDialog):
                 self.genome_combo.setCurrentText(settings["genome"])
             if settings.get("na"):
                 self.na_spin.setValue(float(settings["na"]))
-            if settings.get("max_frag"):
-                self.maxfrag_spin.setValue(int(settings["max_frag"]))
+            lo = settings.get("min_product", settings.get("min_frag"))
+            hi = settings.get("max_product", settings.get("max_frag"))
+            if lo:
+                self.minfrag_spin.setValue(int(lo))
+            if hi:
+                self.maxfrag_spin.setValue(int(hi))
             if "label_tail" in settings:
                 self.tail_box.setChecked(bool(settings["label_tail"]))
             if settings.get("gc_tail"):

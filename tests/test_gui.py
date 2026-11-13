@@ -1219,12 +1219,26 @@ def test_fragment_and_mama_are_separate_windows():
     ok(not hasattr(frag, "mama_box"), "no MAMA mode checkbox any more")
     ok("CTCE" in frag.windowTitle() and "MAMA" in mama.windowTitle(),
        "window titles name the method")
-    ok(frag.maxfrag_spin.isVisible() and not frag.tail_box.isVisible()
+    ok(frag.minfrag_spin.isVisible() and frag.maxfrag_spin.isVisible()
+       and not frag.tail_box.isVisible()
        and not frag.gc_tail_edit.isVisible(),
-       "fragment design shows max fragment, no labelling tail")
+       "fragment design shows the length range, no labelling tail")
     ok(mama.tail_box.isVisible() and mama.gc_tail_edit.isVisible()
-       and not mama.maxfrag_spin.isVisible(),
-       "MAMA design shows the labelling tail, no max fragment")
+       and mama.minfrag_spin.isVisible() and mama.maxfrag_spin.isVisible(),
+       "MAMA design shows the labelling tail and the length range")
+    fb, mb = frag._base(), mama._base()
+    ok(fb["min_frag"] <= fb["max_frag"] and "min_product" not in fb,
+       "fragment window passes min_frag/max_frag")
+    ok(mb["min_product"] <= mb["max_product"] and "max_frag" not in mb,
+       "MAMA window passes min_product/max_product")
+    mama.minfrag_spin.setValue(300)
+    mama.maxfrag_spin.setValue(200)
+    mama.specs_edit.setPlainText("chr7:140453136 T>A")
+    mama._on_design()
+    ok(mama._thread is None and "minimum is larger" in mama.status.text(),
+       "min > max is refused with a message")
+    mama.minfrag_spin.setValue(60)
+    mama.maxfrag_spin.setValue(250)
     heads = lambda d: [d.table.horizontalHeaderItem(i).text()
                        for i in range(d.table.columnCount())]
     ok(heads(frag) == FRAGMENT_COLUMNS and heads(mama) == MAMA_COLUMNS,

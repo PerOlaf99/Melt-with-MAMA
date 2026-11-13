@@ -2,7 +2,7 @@
 
 Holds the parameters handed to the Primer3 binding when fragments are
 designed (annealing-Tm range, primer length, salt), plus app-wide defaults
-for the melting model (Na+) and the fragment-length cap.  Values are stored
+for the melting model (Na+) and the CTCE / MAMA fragment-length ranges.  Values are stored
 under the platform key and restored as typed types via :func:`current`.
 """
 
@@ -16,7 +16,10 @@ _APP = "MeltScope"
 
 DEFAULTS = {
     "na": 0.013,                 # default Na+ (M) for the melting model
-    "max_frag": 240,             # max fragment length (bp) for design
+    "min_frag": 100,             # CTCE fragment (amplicon + GC clamp), bp
+    "max_frag": 240,
+    "mama_min": 60,              # MAMA product (amplicon + tail), bp
+    "mama_max": 250,
     "tm_opt": 60.0,              # Primer3 optimal primer Tm (°C)
     "tm_min": 46.0,              # Primer3 minimum primer Tm (°C)
     "tm_max": 67.0,              # Primer3 maximum primer Tm (°C)
@@ -29,7 +32,10 @@ DEFAULTS = {
 # bounds of each setting's spin box: value -> (min, max, step, [decimals])
 _LIMITS = {
     "na": (0.001, 1.0, 0.001, 3),
-    "max_frag": (100, 500, 1, 0),
+    "min_frag": (60, 1000, 10, 0),
+    "max_frag": (100, 1000, 10, 0),
+    "mama_min": (40, 1000, 10, 0),
+    "mama_max": (60, 1000, 10, 0),
     "tm_opt": (30.0, 115.0, 0.5, 1),
     "tm_min": (20.0, 110.0, 0.5, 1),
     "tm_max": (40.0, 120.0, 0.5, 1),
@@ -71,7 +77,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("MeltScope settings")
-        self.resize(380, 420)
+        self.resize(400, 560)
         self._spins = {}
         self._build_ui()
         self._load(current())
@@ -93,10 +99,17 @@ class SettingsDialog(QDialog):
         g_m = QGroupBox("Melting maps")
         f_m = QFormLayout(g_m)
         f_m.addRow("Default Na+ (M)", self._spin("na", True))
-        f_m.addRow("Max fragment (bp)", self._spin("max_frag", False))
+
+        g_l = QGroupBox("Default fragment length (bp)")
+        f_l = QFormLayout(g_l)
+        f_l.addRow("CTCE min (incl. GC clamp)", self._spin("min_frag", False))
+        f_l.addRow("CTCE max (incl. GC clamp)", self._spin("max_frag", False))
+        f_l.addRow("MAMA min (incl. tail)", self._spin("mama_min", False))
+        f_l.addRow("MAMA max (incl. tail)", self._spin("mama_max", False))
 
         lay.addWidget(g_p)
         lay.addWidget(g_m)
+        lay.addWidget(g_l)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok
                                 | QDialogButtonBox.Cancel)
@@ -148,6 +161,12 @@ class SettingsDialog(QDialog):
                 self, "MeltScope settings",
                 "Primer length is inconsistent: "
                 "min ≤ optimal ≤ max is required.")
+            return
+        if cfg["min_frag"] > cfg["max_frag"] \
+                or cfg["mama_min"] > cfg["mama_max"]:
+            QMessageBox.warning(
+                self, "MeltScope settings",
+                "Fragment length is inconsistent: min ≤ max is required.")
             return
         set_values(**cfg)
         self.accept()

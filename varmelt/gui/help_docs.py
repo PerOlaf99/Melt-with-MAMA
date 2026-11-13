@@ -51,7 +51,7 @@ explanation</b>.</p>
 <li><b>Settings → Primer design settings…</b> changes the DNA-diagnostic
     parameters: the Primer3 annealing-Tm range (optimal / min / max Tx),
     primer length, salt concentration, and the app-wide defaults for Na+
-    and the fragment-length cap. The next design / tiling run uses them.</li>
+    and the fragment-length ranges for CTCE and MAMA. The next design / tiling run uses them.</li>
 <li><b>Export</b> primers (<b>File &rarr; Export primers (CSV)…</b> or
     <b>Save CSV…</b> above the primer table) or the chart image
     (<b>File &rarr; Export chart image…</b>) for the lab notebook / oligo order.
@@ -95,8 +95,11 @@ explanation</b>.</p>
 <li><b>Import variant list…</b> reads variants from a spreadsheet
     (.ods / .xlsx), a text table (.csv / .tsv / .txt) or a .vcf into the
     variant box; columns such as CHROM/POS/REF/ALT are recognised.</li>
-<li><b>Max fragment (bp)</b> caps the fragment length including the GC clamp
-    (CTCE separates best on short fragments).</li>
+<li><b>Fragment length (bp)</b>, e.g. <code>150 &ndash; 250</code>: the
+    range for the physical fragment, i.e. amplicon <i>plus</i> the 42-bp GC
+    clamp (CTCE separates best on short fragments).  The shortest amplicon
+    searched is 70&nbsp;bp, so fragments are at least 112&nbsp;bp.  The default
+    range comes from Settings.</li>
 <li><b>Sort</b> by clicking column headers (Score, Fragment length, Δarea, Variant/chr, …).
     Numeric columns sort by value, not by text.</li>
 <li><b>Multi-select</b>: Ctrl+click to toggle rows, Shift+click for a range,
@@ -138,6 +141,11 @@ sample: WT&nbsp;+&nbsp;common and MUT&nbsp;+&nbsp;common.
     products differ in length.  Variants written VCF-style
     (<code>ACATTG&gt;A</code>) are counted from the base after the shared
     anchor base.</li>
+<li><b>Fragment length (bp)</b>: the range for the PCR products as the
+    capillary sees them, genomic amplicon <i>plus</i> the labelling tail
+    when it is ON.  It applies to both the WT and the MUT product, which differ
+    in length for deletions and insertions.  The default range comes from
+    Settings.</li>
 <li><b>Labelling tail</b> (ON/OFF button): when ON, the common primer gets a
     5&prime; tail.  Add a fluorescent primer with the tail's sequence to the
     PCR: once the tail has been copied into the product it primes there and
