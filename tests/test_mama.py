@@ -373,3 +373,20 @@ def test_snp_primers_follow_cha_1992():
             assert primer[:-2] == genomic[:-2]
         seen.add(a.orientation)
     assert seen == {"forward", "reverse"}
+
+
+def test_label_tail_optional():
+    seq = _seq_case("G", "A")
+    on = mama.design_mama(chrom="ref", pos=250, ref="G", alt="A",
+                          refseq_override=seq, genome="").candidates[0]
+    off = mama.design_mama(chrom="ref", pos=250, ref="G", alt="A",
+                           refseq_override=seq, genome="",
+                           label_tail=False).candidates[0]
+    a_on, a_off = on.mama, off.mama
+    assert a_on.info.common_primer.startswith(mama.MAMA_GC_TAIL)
+    assert a_off.info.gc_tail == "" and a_off.info.label_primer == ""
+    genomic = a_off.info.common_genome
+    assert a_off.info.common_primer in (genomic, mama.pr._revcomp(genomic))
+    assert mama.MAMA_GC_TAIL not in a_off.wt_amp
+    assert "No labelling tail" in mama.format_assay(off)
+    assert "Label primer" in mama.format_assay(on)

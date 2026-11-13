@@ -24,12 +24,17 @@ failures = 0
 
 
 def ok(cond, msg):
+    """Report one check.  Under pytest a failed check fails the test (it used
+    to only print, so pytest always reported the GUI tests as passed); run as
+    a script it is counted and the run continues."""
     global failures
     if cond:
         print(f"[ok] {msg}")
-    else:
-        failures += 1
-        print(f"[FAIL] {msg}")
+        return
+    failures += 1
+    print(f"[FAIL] {msg}")
+    if "pytest" in sys.modules:
+        raise AssertionError(msg)
 
 
 def test_model_compute_roundtrip():
@@ -1189,6 +1194,128 @@ def test_design_dialog_uses_settings():
     as_.set_values(**as_.DEFAULTS)
 
 
+def _mama_seq():
+    import random
+    rng = random.Random(4)
+    bg = lambda n: "".join(rng.choice("ACGT") for _ in range(n))
+    return bg(250) + "G" + bg(250)
+
+
+def test_fragment_and_mama_are_separate_windows():
+    """Design menu: fragment design (CTCE) and MAMA open different windows,
+    each showing only its own options."""
+    from PySide6.QtWidgets import QApplication
+    from varmelt.gui.main import MainWindow
+    from varmelt.gui.design import FRAGMENT_COLUMNS, MAMA_COLUMNS
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    win.show()
+    win._open_design()
+    win._open_mama()
+    app.processEvents()
+    frag, mama = win._design_dlg, win._mama_dlg
+    ok(frag is not mama, "fragment and MAMA design are separate windows")
+    ok(not hasattr(frag, "mama_box"), "no MAMA mode checkbox any more")
+    ok("CTCE" in frag.windowTitle() and "MAMA" in mama.windowTitle(),
+       "window titles name the method")
+    ok(frag.maxfrag_spin.isVisible() and not frag.tail_box.isVisible()
+       and not frag.gc_tail_edit.isVisible(),
+       "fragment design shows max fragment, no labelling tail")
+    ok(mama.tail_box.isVisible() and mama.gc_tail_edit.isVisible()
+       and not mama.maxfrag_spin.isVisible(),
+       "MAMA design shows the labelling tail, no max fragment")
+    heads = lambda d: [d.table.horizontalHeaderItem(i).text()
+                       for i in range(d.table.columnCount())]
+    ok(heads(frag) == FRAGMENT_COLUMNS and heads(mama) == MAMA_COLUMNS,
+       "each window has its own result columns")
+    mama.tail_box.setChecked(False)
+    ok(not mama.gc_tail_edit.isEnabled(), "tail sequence greys out when off")
+    ok(mama._base()["label_tail"] is False and mama._base()["gc_tail"] == "",
+       "untick passes no tail to the engine")
+    ok(frag._base()["mama"] is False and mama._base()["mama"] is True,
+       "each window runs its own engine")
+    win._open_mama()
+    ok(win._mama_dlg is mama and not mama.tail_box.isChecked(),
+       "reopening MAMA keeps that window and its settings")
+    frag.close(); mama.close(); win.close()
+
+
+def test_mama_window_runs_engine_and_shows_inpcr():
+    from PySide6.QtWidgets import QApplication
+    from varmelt import mama as mm
+    from varmelt.gui import design as gd
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    seq = _mama_seq()
+
+    def fake(specs, base, progress=None, stop=None):
+        res = mm.design_mama(chrom="ref", pos=250, ref="G", alt="A",
+                             refseq_override=seq, genome="",
+                             label_tail=base["label_tail"],
+                             gc_tail=base["gc_tail"] or None)
+        return res.candidates, []
+    orig = gd._run_design_sync
+    gd._run_design_sync = fake
+    try:
+        win = MainWindow()
+        win._open_mama()
+        dlg = win._mama_dlg
+        dlg.specs_edit.setPlainText("chr1:250 G>A")
+        dlg.tail_box.setChecked(False)
+        dlg._on_design()
+        dlg._thread.wait()
+        app.processEvents()
+        ok(dlg.table.rowCount() >= 2, "WT and MUT rows listed")
+        row = {dlg.table.horizontalHeaderItem(c).text():
+               dlg.table.item(0, c).text()
+               for c in range(dlg.table.columnCount())}
+        ok(row["Type"] == "snp", "variant type column")
+        ok(row["In-silico PCR"] == "0 (expected 0)",
+           "in-silico PCR result against expectation")
+        ok("no tail" in row["Orientation"], "tail state shown")
+        c0 = dlg._cands[0].mama
+        ok(not c0.info.common_primer.startswith(mm.MAMA_GC_TAIL)
+           and c0.info.gc_tail == "", "common primer has no tail when off")
+        dlg.close(); win.close()
+    finally:
+        gd._run_design_sync = orig
+
+
+def test_candidate_file_opens_only_in_matching_window():
+    import json, os, tempfile
+    from PySide6.QtWidgets import QApplication, QFileDialog
+    from varmelt import mama as mm
+    from varmelt.gui.main import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    res = mm.design_mama(chrom="ref", pos=250, ref="G", alt="A",
+                         refseq_override=_mama_seq(), genome="")
+    win = MainWindow()
+    win._open_mama()
+    win._open_design()
+    mama, frag = win._mama_dlg, win._design_dlg
+    mama._show_candidates(res.candidates)
+    path = os.path.join(tempfile.mkdtemp(), "m.candidates.json")
+    with open(path, "w") as fh:
+        json.dump({"candidates": mama._candidate_payload(),
+                   "settings": mama._base()}, fh)
+    orig = QFileDialog.getOpenFileName
+    QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (path, ""))
+    try:
+        frag._load_candidates()
+        ok("MAMA assay design" in frag.status.text()
+           and frag.table.rowCount() == 0,
+           "fragment window refuses a MAMA file and says where to open it")
+        mama._show_candidates([])
+        mama._load_candidates()
+        ok(mama.table.rowCount() >= 2, "MAMA window loads its own file")
+    finally:
+        QFileDialog.getOpenFileName = orig
+    mama.close(); frag.close(); win.close()
+
+
 if __name__ == "__main__":
     test_model_compute_roundtrip()
     test_project_schema()
@@ -1214,6 +1341,9 @@ if __name__ == "__main__":
     test_design_dialog_uses_settings()
     test_list_numbering_filter_and_table_link()
     test_buttons_and_table()
+    test_fragment_and_mama_are_separate_windows()
+    test_mama_window_runs_engine_and_shows_inpcr()
+    test_candidate_file_opens_only_in_matching_window()
     print("\n" + ("ALL GUI TESTS PASSED" if failures == 0
                   else f"{failures} FAILURE(S)"))
     sys.exit(1 if failures else 0)

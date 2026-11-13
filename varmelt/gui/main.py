@@ -370,15 +370,16 @@ class MainWindow(QMainWindow):
                          "Close MeltScope")
 
         m_des = self.menuBar().addMenu("&Design")
-        self._add_action(m_des, "Fragment design…", self._open_design,
+        self._add_action(m_des, "Fragment design (CTCE)…", self._open_design,
                          "Ctrl+D",
-                         "Design candidate fragments for an rsID or genomic "
-                         "position (variant melting profile)")
-        self._add_action(m_des, "MAMA assay…", self._open_mama,
+                         "Two primers around the variant; wildtype and "
+                         "mutant fragments separated by cycling temperature "
+                         "capillary electrophoresis")
+        self._add_action(m_des, "MAMA assay design…", self._open_mama,
                          "Ctrl+M",
-                         "Design MAMA allele-specific assays (SNPs, "
-                         "deletions, delins): WT+common and MUT+common "
-                         "primer sets; GC-tail labelling oligo")
+                         "Three primers: WT and MUT allele-specific plus one "
+                         "common primer, optionally with a 5' labelling tail "
+                         "(SNPs, deletions, delins)")
         self._add_action(m_des, "Fragment tiling…", self._open_tiling,
                          "Ctrl+T",
                          "Cover a long segment (pasted or a GenBank "
@@ -486,21 +487,20 @@ class MainWindow(QMainWindow):
         self._show_design_dialog(mama=False)
 
     def _open_mama(self):
-        """Open fragment design with MAMA already enabled."""
+        """Open the MAMA assay-design window (one instance, stays open)."""
         self._show_design_dialog(mama=True)
 
     def _show_design_dialog(self, mama: bool = False):
+        """Fragment design and MAMA design are separate windows, so each
+        keeps its own settings and results."""
         from .design import DesignDialog
-        dlg = getattr(self, "_design_dlg", None)
+        attr = "_mama_dlg" if mama else "_design_dlg"
+        dlg = getattr(self, attr, None)
         if dlg is None:
             dlg = DesignDialog(self, mama=mama)
             dlg.candidate.connect(self._add_designed)
             dlg.candidates.connect(self._add_designed_many)
-            self._design_dlg = dlg
-        else:
-            dlg.mama_box.setChecked(bool(mama))
-            dlg.setWindowTitle("MAMA assay design" if mama
-                               else "Fragment design")
+            setattr(self, attr, dlg)
         dlg.refresh_settings()
         dlg.show()
         dlg.raise_()
@@ -1385,9 +1385,10 @@ class MainWindow(QMainWindow):
         self._debounce.stop()
         # Let a running design batch finish before the dialog (and its worker
         # thread) are destroyed -- otherwise Qt aborts the whole process.
-        dlg = getattr(self, "_design_dlg", None)
-        if dlg is not None:
-            dlg.shutdown()
+        for attr in ("_design_dlg", "_mama_dlg"):
+            dlg = getattr(self, attr, None)
+            if dlg is not None:
+                dlg.shutdown()
         super().closeEvent(event)
 
 

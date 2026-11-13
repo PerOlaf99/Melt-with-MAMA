@@ -24,9 +24,19 @@ MAX_AUTO_PLOTTED_BATCH = 15
 
 SCORE_NOTE = ("Score 0-100: dip-free (45) + resolvable wt/mut difference "
               "(30) + primer Tm in range (10) + short fragment (10) "
-              "+ dbSNP-free 3' ends (5).  MAMA score: dTm + deletion "
-              "bonus + 3' differences (>=3) + Thilly -2 mismatch (SNPs) "
-              "+ Tm in range + short product.")
+              "+ dbSNP-free 3' ends (5).")
+
+MAMA_SCORE_NOTE = ("Score 0-100: dTm + deletion bonus + 3' differences (>=3) "
+                   "+ Cha/Thilly -2 mismatch (SNPs) + Tm in range + short "
+                   "product; -40 when the in-silico PCR on the reference does "
+                   "not give the expected products (\u26a0).  Expected: "
+                   "deletion/insertion WT 1 / MUT 0, point mutation WT 0 / "
+                   "MUT 0.")
+
+FRAGMENT_COLUMNS = ["Variant / set", "Score", "Fragment", "Shape", "\u0394area",
+                    "FP/RP Tm", "Clamp", "Primers"]
+MAMA_COLUMNS = ["Variant / set", "Score", "Product", "Type", "In-silico PCR",
+                "AS/common Tm", "Orientation", "Primers (fwd / rev)"]
 
 SPEC_HINT = ("One variant per line.  Use a dbSNP rsID (human builds only -- "
              "coordinates are resolved for the chosen build) or a position, "
@@ -38,7 +48,7 @@ SPEC_HINT = ("One variant per line.  Use a dbSNP rsID (human builds only -- "
              "Any build UCSC hosts works (hg38, mm39, rn6, danRer11, …) -- "
              "give coordinates in the build you select.\n"
               "Deletions / delins: chr16:81185435 ACATTGATGGATAGCCAGGAGTTG>A\n"
-              "or chr7:140453136 ATG>-  (MAMA checkbox).")
+              "or chr7:140453136 ATG>-")
 
 
 
@@ -102,10 +112,11 @@ def _run_design_sync(specs, base, progress=None, stop=None):
         # Avoid duplicate keyword argument 'genome'
         spec_kw = {k: v for k, v in spec.items() if k != "genome"}
         engine_kw = {k: v for k, v in base.items()
-                     if k not in ("genome", "mama", "gc_tail")}
+                     if k not in ("genome", "mama", "gc_tail", "label_tail")}
         try:
             if base.get("mama"):
                 from .. import mama as mama_mod
+                engine_kw["label_tail"] = bool(base.get("label_tail", True))
                 if base.get("gc_tail"):
                     engine_kw["gc_tail"] = base["gc_tail"]
                 result = mama_mod.design_mama(
@@ -168,8 +179,12 @@ class DesignDialog(QDialog):
 
     def __init__(self, parent=None, mama: bool = False):
         super().__init__(parent)
-        self.setWindowTitle("MAMA assay design" if mama
-                            else "Fragment design")
+        # The mode is fixed for the life of the window: fragment design
+        # (two primers around the variant, CTCE separation) and MAMA (WT,
+        # MUT and common primer) are separate windows.
+        self._mama = bool(mama)
+        self.setWindowTitle("MAMA assay design" if self._mama
+                            else "Fragment design (CTCE)")
         self.setMinimumWidth(760)
         self._cands = []
         self._thread = None
@@ -182,7 +197,7 @@ class DesignDialog(QDialog):
         self.specs_edit.setPlaceholderText(
             "chr16:81185435 ACATTGATGGATAGCCAGGAGTTG>A\n"
             "chr16:30391275 T>C\nchr7:140453136 ATG>-"
-            if mama else
+            if self._mama else
             "rs113488022\nchr16:30391275 T>C\nchr7:140453136 G>A")
         self.specs_edit.setFixedHeight(92)
         form.addRow("Variant(s)", self.specs_edit)
@@ -227,24 +242,45 @@ class DesignDialog(QDialog):
         self.na_spin.setSingleStep(0.001)
         self.na_spin.setValue(0.013)
         form.addRow("Na+ (M)", self.na_spin)
+        # Fragment design only: CTCE fragment length cap.
         self.maxfrag_spin = QSpinBox()
         self.maxfrag_spin.setRange(100, 500)
         self.maxfrag_spin.setValue(240)
-        form.addRow("Max fragment (bp)", self.maxfrag_spin)
-        self.mama_box = QCheckBox("MAMA (allele-specific + GC-tail label)")
-        self.mama_box.setChecked(bool(mama))
-        self.mama_box.setToolTip(
-            "Design WT and MUT primer sets. The common primer carries a "
-            "5' GC tail as the annealing site for a fluorescent labelling "
-            "oligo. Deletions: shared 5' start, WT 3-5 bp into the deleted "
-            "stretch, MUT 3-5 bp beyond (>=3 3' differences). SNPs: Thilly "
-            "MAMA (3' allele + penultimate mismatch). No CTCE clamp.")
-        form.addRow("", self.mama_box)
+        # MAMA only: optional 5' labelling tail on the common primer.
+        self.tail_box = QCheckBox("attach to the 5\u2032 end of the common primer")
+        self.tail_box.setChecked(True)
+        self.tail_box.setToolTip(
+            "The tail is the landing site for a fluorescent labelling "
+            "primer added to the PCR.  Untick for unlabelled common "
+            "primers.")
         self.gc_tail_edit = QLineEdit("CGCCCGCCGCGCCCCGCG")
         self.gc_tail_edit.setToolTip(
-            "5' GC tail on the common primer; also the labelling-primer "
+            "5' tail on the common primer; also the labelling-primer "
             "sequence")
-        form.addRow("MAMA GC tail", self.gc_tail_edit)
+        self.tail_box.toggled.connect(self.gc_tail_edit.setEnabled)
+        if self._mama:
+            form.addRow("Labelling tail", self.tail_box)
+            form.addRow("Tail sequence", self.gc_tail_edit)
+            self.maxfrag_spin.hide()
+        else:
+            form.addRow("Max fragment (bp)", self.maxfrag_spin)
+            self.tail_box.hide()
+            self.gc_tail_edit.hide()
+        if self._mama:
+            self.mode_info = QLabel(
+                "Three primers per assay: a WT and a MUT allele-specific "
+                "primer, each used with one shared common primer.  "
+                "Point mutations: allele base at the 3\u2032 end plus a "
+                "deliberate mismatch at \u22122 (Cha, Zarbl, Keohavong & "
+                "Thilly 1992).  Deletions: WT 3\u2032 end 3\u20135 bp into "
+                "the deleted stretch, MUT 3\u2032 end 3\u20135 bp beyond "
+                "the junction.")
+        else:
+            self.mode_info = QLabel(
+                "Two primers around the variant; wildtype and mutant "
+                "fragments are separated by cycling temperature capillary "
+                "electrophoresis (CTCE).")
+        self.mode_info.setWordWrap(True)
         self._primer_tm = (60.0, 46.0, 67.0)
         self._primer_size = (20, 18, 23)
         self._primer_salt = 50.0
@@ -267,10 +303,9 @@ class DesignDialog(QDialog):
         self.status = QLabel("")
         self.status.setWordWrap(True)
 
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(
-            ["Variant / set", "Score", "Fragment", "Shape", "Δarea",
-             "FP/RP Tm", "Clamp", "Primers"])
+        columns = MAMA_COLUMNS if self._mama else FRAGMENT_COLUMNS
+        self.table = QTableWidget(0, len(columns))
+        self.table.setHorizontalHeaderLabels(columns)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.ExtendedSelection)
@@ -324,13 +359,16 @@ class DesignDialog(QDialog):
         add_row.addStretch(1)
 
         body = QVBoxLayout(self)
+        body.addWidget(self.mode_info)
         body.addLayout(form)
         body.addLayout(import_row)
         body.addWidget(self.hint)
         body.addLayout(btns)
         body.addWidget(self.status)
         body.addWidget(self.table)
-        body.addWidget(QLabel(SCORE_NOTE))
+        score_note = QLabel(MAMA_SCORE_NOTE if self._mama else SCORE_NOTE)
+        score_note.setWordWrap(True)
+        body.addWidget(score_note)
         body.addLayout(add_row)
 
     # ------------------------------------------------------------ design - #
@@ -416,8 +454,11 @@ class DesignDialog(QDialog):
                 "min_size": self._primer_size[1],
                 "max_size": self._primer_size[2],
                 "salt_mm": self._primer_salt,
-                "mama": self.mama_box.isChecked(),
-                "gc_tail": self.gc_tail_edit.text().strip().upper()}
+                "mama": self._mama,
+                "label_tail": self._mama and self.tail_box.isChecked(),
+                "gc_tail": (self.gc_tail_edit.text().strip().upper()
+                            if self._mama and self.tail_box.isChecked()
+                            else "")}
 
     def _on_design(self):
         from ..dbsnp import is_human_assembly
@@ -508,12 +549,38 @@ class DesignDialog(QDialog):
                     "genome": getattr(c, "genome", None)}
             label = design.spec_label(spec)
             if s:
+                info = c.mama.info
                 label = f"{label} [{s['allele']}]"
-                shape = c.shape
-                clamp = "GC-tail (label)"
-                frag = f"{s['length']} bp"
-                primers = f"{s['forward']} / {s['reverse']}"
-                tm_txt = f"{c.ft:.0f}/{c.rt:.0f}"
+                if "\u26a0" in c.mama.name:
+                    label += " \u26a0"
+                kind = (c.mama.kind or "").replace("MAMA ", "")
+                if info.inpcr_ok is None:
+                    pcr = "not run"
+                else:
+                    n = info.inpcr_wt if s["allele"] == "WT" else info.inpcr_mut
+                    exp = 1 if (s["allele"] == "WT" and kind != "snp") else 0
+                    pcr = (f"{n} (expected {exp})"
+                           + ("" if n == exp else " \u26a0"))
+                tail = "tail" if info.gc_tail else "no tail"
+                cells = [
+                    (label, (_chrom_sort_key(c.chrom), int(c.pos), label)),
+                    (str(c.score), int(c.score)),
+                    (f"{s['length']} bp", int(s["length"])),
+                    (kind, kind),
+                    (pcr, pcr),
+                    (f"{c.ft:.0f}/{c.rt:.0f}",
+                     (float(c.ft) + float(c.rt)) / 2.0),
+                    (f"{c.mama.orientation}, {tail}", c.mama.orientation),
+                    (f"{s['forward']} / {s['reverse']}", s["forward"]),
+                ]
+                for col, (text, key) in enumerate(cells):
+                    item = SortableItem(text)
+                    item.setData(Qt.UserRole, key)
+                    item.setData(Qt.UserRole + 1, ci)
+                    if col == 4 and info.inpcr_note:
+                        item.setToolTip(info.inpcr_note)
+                    self.table.setItem(row, col, item)
+                continue
             else:
                 shape = c.shape
                 clamp = c.clamp or "-"
@@ -624,6 +691,16 @@ class DesignDialog(QDialog):
             self.status.setText(
                 '<font color="#a00">no candidates in that file</font>')
             return
+        has_mama = any(isinstance(r, dict) and r.get("mama") for r in rows)
+        if has_mama != self._mama:
+            self.status.setText(
+                '<font color="#a00">this file holds '
+                + ("MAMA assays -- open it from Design \u2192 MAMA assay "
+                   "design" if has_mama else
+                   "CTCE fragments -- open it from Design \u2192 Fragment "
+                   "design")
+                + "</font>")
+            return
         keys = frozenset(f.name for f in dataclasses.fields(Candidate))
         cands = []
         try:
@@ -649,8 +726,8 @@ class DesignDialog(QDialog):
                 self.na_spin.setValue(float(settings["na"]))
             if settings.get("max_frag"):
                 self.maxfrag_spin.setValue(int(settings["max_frag"]))
-            if "mama" in settings:
-                self.mama_box.setChecked(bool(settings["mama"]))
+            if "label_tail" in settings:
+                self.tail_box.setChecked(bool(settings["label_tail"]))
             if settings.get("gc_tail"):
                 self.gc_tail_edit.setText(str(settings["gc_tail"]))
         self._set_busy(False)

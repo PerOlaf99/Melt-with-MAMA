@@ -160,11 +160,13 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
                  min_product: int = 60,
                  max_product: int = 220,
                  max_frag: int = pr.MAX_FRAG_LENGTH,
-                 do_inpcr: bool = True) -> DesignResult:
+                 do_inpcr: bool = True,
+                 label_tail: bool = True) -> DesignResult:
     """Ranked MAMA assays for a SNP, deletion or insertion.
 
-    The common primer always carries *gc_tail* on its 5' end (labelling-primer
-    landing site).  SNPs follow Cha et al. 1992 (3' allele base plus one
+    With *label_tail* (default) the common primer carries *gc_tail* on its
+    5' end as the landing site for a labelling primer; with
+    ``label_tail=False`` the common primer is the plain genomic sequence.  SNPs follow Cha et al. 1992 (3' allele base plus one
     penultimate mismatch on each allele-specific primer; equal-length
     amplicons).  Deletions share a 5'
     start, with WT 3-5 bp into the deleted stretch and MUT 3-5 bp beyond
@@ -183,8 +185,11 @@ def design_mama(rsid: Optional[str] = None, chrom: str = "ref",
         refseq_override)
     altseq = render_variant(alt, ref, alt, idx, refseq)
     kind = _variant_kind(ref, alt)
-    gc_tail = "".join(ch for ch in (gc_tail or MAMA_GC_TAIL).upper()
-                      if ch in "ACGT") or MAMA_GC_TAIL
+    if label_tail:
+        gc_tail = "".join(ch for ch in (gc_tail or MAMA_GC_TAIL).upper()
+                          if ch in "ACGT") or MAMA_GC_TAIL
+    else:
+        gc_tail = ""
 
     assays: List[MamaCandidate] = []
     if kind == "snp":
@@ -280,7 +285,8 @@ def analyze_mama(rsid: Optional[str] = None, chrom: str = "ref",
             round(assay.ft, 2), round(assay.rt, 2),
             round(assay.ft, 2), round(assay.rt, 2),
             s["length"], round(wt_mean if s["allele"] == "WT" else mut_mean, 2),
-            f"{s['forward']}/{s['reverse']}", "GC-tail (label)",
+            f"{s['forward']}/{s['reverse']}",
+            "GC-tail (label)" if info.gc_tail else "no tail",
             assay.kind, s["label"],
         ])
     base = None
@@ -330,10 +336,16 @@ def format_assay(c: Candidate) -> str:
         f"          RP {info.wt_reverse}   ({assay.product_len_wt} bp)",
         f"  MUT set FP {info.mut_forward}",
         f"          RP {info.mut_reverse}   ({assay.product_len_mut} bp)",
-        f"  Label primer (matches GC tail): {info.label_primer}",
         f"  {_assay_extra_note(info)}; {info.orientation}; "
         f"approx dTm {assay.delta_tm:.1f} C",
     ]
+    if info.label_primer:
+        lines.insert(5, f"  Label primer (matches GC tail): "
+                        f"{info.label_primer}")
+    else:
+        lines.insert(5, "  No labelling tail on the common primer")
+    if info.inpcr_note:
+        lines.append(f"  {info.inpcr_note}")
     return "\n".join(lines) + "\n"
 
 
